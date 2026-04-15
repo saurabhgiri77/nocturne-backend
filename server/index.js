@@ -2,7 +2,8 @@ const path = require("path");
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
-require("dotenv").config({ path: path.join(__dirname, ".env") });
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
+require("dotenv").config({ path: path.join(__dirname, `../${envFile}`) });
 const connectDB = require("./config/db");
 
 const app = express();
@@ -29,7 +30,7 @@ app.use("/api/auth", require("./routes/auth"));
 const { initSocket } = require("./socket");
 initSocket(io);
 
-app.get("/health", (req, res) => res.json({ status: "ok", ts: new Date() }));
+app.get("/health", (_req, res) => res.json({ status: "ok", ts: new Date() }));
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => console.log(`Server on port ${PORT}`));

@@ -53,4 +53,39 @@ router.post('/login', async (req, res) => {
   }
 });
 
+router.post('/google', async (req, res) => {
+  try {
+    const { accessToken } = req.body;
+    if (!accessToken)
+      return res.status(400).json({ message: 'Google access token required' });
+
+    const googleRes = await fetch(
+      `https://www.googleapis.com/oauth2/v3/userinfo`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!googleRes.ok)
+      return res.status(401).json({ message: 'Invalid Google token' });
+
+    const { sub: googleId, email } = await googleRes.json();
+
+    let user = await User.findOne({ googleId });
+    if (!user) {
+      user = await User.findOne({ email });
+      if (user) {
+        user.googleId = googleId;
+        await user.save();
+      } else {
+        user = await User.create({ email, googleId });
+      }
+    }
+
+    res.status(200).json({
+      token: signToken(user._id),
+      user: { id: user._id, email: user.email },
+    });
+  } catch (err) {
+    res.status(401).json({ message: 'Google authentication failed', error: err.message });
+  }
+});
+
 module.exports = router;

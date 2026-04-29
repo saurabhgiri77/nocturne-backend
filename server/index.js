@@ -6,12 +6,17 @@ const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.en
 require("dotenv").config({ path: path.join(__dirname, `../${envFile}`) });
 const connectDB = require("./config/db");
 
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const app = express();
 const server = http.createServer(app);
 const { Server } = require("socket.io");
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
   },
   transports: ["polling", "websocket"],
@@ -20,7 +25,7 @@ const io = new Server(server, {
   pingInterval: 25000,
 });
 
-app.use(cors());
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 
 connectDB();

@@ -31,6 +31,14 @@ const handleSignaling = (io, socket) => {
     getPeer(io, room, socket.id)?.emit('ice_candidate', { candidate });
   });
 
+  // Peer media state (mic/camera on/off) — relay only
+  // Payload: { roomId: string, micEnabled: boolean, cameraEnabled: boolean }
+  socket.on('media_state', ({ roomId, micEnabled, cameraEnabled }) => {
+    const room = activeRooms.get(roomId);
+    if (!room) return;
+    getPeer(io, room, socket.id)?.emit('media_state', { micEnabled, cameraEnabled });
+  });
+
   // Chat — relay only, NEVER persist to DB
   // Payload: { roomId: string, message: string }
   socket.on('chat_message', ({ roomId, message }) => {

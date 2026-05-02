@@ -31,6 +31,7 @@ app.use(express.json());
 connectDB();
 
 app.use("/api/auth", require("./routes/auth"));
+app.use("/api/reports", require("./routes/reports"));
 
 const { initSocket } = require("./socket");
 initSocket(io);

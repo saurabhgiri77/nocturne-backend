@@ -27,8 +27,8 @@ const handleMatchmaking = (io, socket) => {
       socket.roomId = roomId;
       waitingData.socket.roomId = roomId;
 
-      socket.emit('match_found', { roomId, role: 'initiator' });
-      waitingData.socket.emit('match_found', { roomId, role: 'receiver' });
+      socket.emit('match_found', { roomId, role: 'initiator', peerUserId: waitingData.userId });
+      waitingData.socket.emit('match_found', { roomId, role: 'receiver', peerUserId: socket.user.id });
 
       console.log(
         `[match] ${socket.user.id} <-> ${waitingData.userId}  room=${roomId}`

@@ -1,12 +1,29 @@
 const CallLog = require('../models/CallLog');
+const User = require('../models/User');
 
 // In-memory stores — module-level (persist for lifetime of process)
-const waitingQueue = new Map(); // key: socketId, value: { socket, userId }
+const waitingQueue = new Map(); // key: socketId, value: { socket, userId, profile }
 const activeRooms = new Map(); // key: roomId,   value: room object
 
+// Look up the public-facing profile bits we need to surface in `match_found`
+// so the peer's UI can show "username" instead of "Stranger".
+const fetchProfile = async (userId) => {
+  try {
+    const u = await User.findById(userId).select('username displayName').lean();
+    return {
+      username: u?.username || null,
+      displayName: u?.displayName || null,
+    };
+  } catch {
+    return { username: null, displayName: null };
+  }
+};
+
 const handleMatchmaking = (io, socket) => {
-  socket.on('join_queue', () => {
+  socket.on('join_queue', async () => {
     if (waitingQueue.has(socket.id)) return; // already queued, ignore duplicate
+
+    const myProfile = await fetchProfile(socket.user.id);
 
     if (waitingQueue.size > 0) {
       // ── Pair with first waiting user ──
@@ -27,15 +44,27 @@ const handleMatchmaking = (io, socket) => {
       socket.roomId = roomId;
       waitingData.socket.roomId = roomId;
 
-      socket.emit('match_found', { roomId, role: 'initiator', peerUserId: waitingData.userId });
-      waitingData.socket.emit('match_found', { roomId, role: 'receiver', peerUserId: socket.user.id });
+      socket.emit('match_found', {
+        roomId,
+        role: 'initiator',
+        peerUserId: waitingData.userId,
+        peerUsername: waitingData.profile.username,
+        peerDisplayName: waitingData.profile.displayName,
+      });
+      waitingData.socket.emit('match_found', {
+        roomId,
+        role: 'receiver',
+        peerUserId: socket.user.id,
+        peerUsername: myProfile.username,
+        peerDisplayName: myProfile.displayName,
+      });
 
       console.log(
         `[match] ${socket.user.id} <-> ${waitingData.userId}  room=${roomId}`
       );
     } else {
       // ── Queue empty — wait ──
-      waitingQueue.set(socket.id, { socket, userId: socket.user.id });
+      waitingQueue.set(socket.id, { socket, userId: socket.user.id, profile: myProfile });
       socket.emit('waiting', { message: 'Waiting for a match...' });
       console.log(
         `[queue] ${socket.user.id} waiting | queue=${waitingQueue.size}`

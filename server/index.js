@@ -2,6 +2,7 @@ const path = require("path");
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
+const helmet = require("helmet");
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
 require("dotenv").config({ path: path.join(__dirname, `../${envFile}`) });
 const connectDB = require("./config/db");
@@ -25,8 +26,12 @@ const io = new Server(server, {
   pingInterval: 25000,
 });
 
+// Security headers (X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security
+// in prod, Referrer-Policy, etc). CSP is disabled because we serve JSON-only — CSP
+// applies to HTML responses, not API JSON.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: allowedOrigins }));
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
 
 connectDB();
 

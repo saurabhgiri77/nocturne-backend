@@ -20,6 +20,23 @@ const serializeUser = (user) => ({
 // Minimum age to sign up. Mirror this in the frontend's constants/policy.js.
 const MIN_AGE_YEARS = 18;
 
+// Generic, non-leaky 500 helper. Logs the real error server-side; returns a
+// stable shape to the client so we don't expose stack traces or library messages.
+const handle500 = (res, label, err) => {
+  console.error(`[${label}]`, err);
+  return res.status(500).json({ message: 'Server error' });
+};
+
+// Coerce request-body strings to actual primitive strings so a malicious
+// client can't smuggle a Mongo operator object (e.g. {"email": {"$ne": null}})
+// into a findOne/findById call.
+const asString = (v) => (typeof v === 'string' ? v : '');
+
+// Light email-shape sanity. Real email validation is impossible in regex;
+// this just rejects obvious junk + caps length.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const isEmailish = (s) => typeof s === 'string' && s.length <= 254 && EMAIL_RE.test(s);
+
 const ageInYears = (dob) => {
   const now = new Date();
   let age = now.getFullYear() - dob.getFullYear();
@@ -30,26 +47,32 @@ const ageInYears = (dob) => {
 
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, username, dateOfBirth } = req.body;
+    const email = asString(req.body.email).toLowerCase().trim();
+    const password = asString(req.body.password);
+    const usernameRaw = asString(req.body.username).toLowerCase().trim();
+    const dateOfBirth = req.body.dateOfBirth;
 
     // Required fields
     if (!email || !password)
       return res.status(400).json({ message: 'Email and password required' });
-    if (!username) return res.status(400).json({ message: 'Username required' });
+    if (!isEmailish(email))
+      return res.status(400).json({ message: 'Invalid email' });
+    if (!usernameRaw) return res.status(400).json({ message: 'Username required' });
     if (!dateOfBirth) return res.status(400).json({ message: 'Date of birth required' });
     if (password.length < 6)
       return res.status(400).json({ message: 'Min 6 chars' });
+    if (password.length > 200)
+      return res.status(400).json({ message: 'Password too long' });
 
     // Username format
-    const u = String(username).toLowerCase().trim();
-    if (!User.USERNAME_REGEX.test(u)) {
+    if (!User.USERNAME_REGEX.test(usernameRaw)) {
       return res.status(400).json({
         message: 'Username must be 3–20 chars: lowercase letters, digits, _ or .',
       });
     }
 
     // DOB + age
-    const dob = new Date(dateOfBirth);
+    const dob = new Date(asString(dateOfBirth) || dateOfBirth);
     if (Number.isNaN(dob.getTime())) {
       return res.status(400).json({ message: 'Invalid date of birth' });
     }
@@ -61,13 +84,13 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'Invalid date of birth' });
     }
 
-    // Uniqueness checks
+    // Uniqueness checks (queries get string scalars, not objects)
     if (await User.findOne({ email }))
       return res.status(409).json({ message: 'Email already registered' });
-    if (await User.findOne({ username: u }))
+    if (await User.findOne({ username: usernameRaw }))
       return res.status(409).json({ message: 'Username taken' });
 
-    const user = new User({ email, passwordHash: password, username: u, dateOfBirth: dob });
+    const user = new User({ email, passwordHash: password, username: usernameRaw, dateOfBirth: dob });
     await user.save();
 
     res.status(201).json({
@@ -76,19 +99,21 @@ router.post('/register', async (req, res) => {
     });
   } catch (err) {
     if (err.code === 11000) {
-      // Race condition between findOne and save — fallback duplicate-key handling
       return res.status(409).json({ message: 'Email or username already registered' });
     }
-    res.status(500).json({ message: 'Server error', error: err.message });
+    return handle500(res, 'auth/register', err);
   }
 });
 
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = asString(req.body.email).toLowerCase().trim();
+    const password = asString(req.body.password);
 
     if (!email || !password)
       return res.status(400).json({ message: 'Email and password required' });
+    if (!isEmailish(email))
+      return res.status(401).json({ message: 'Invalid credentials' });
 
     const user = await User.findOne({ email });
     if (!user)
@@ -103,16 +128,38 @@ router.post('/login', async (req, res) => {
       user: serializeUser(user),
     });
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
+    return handle500(res, 'auth/login', err);
   }
 });
 
 router.post('/google', async (req, res) => {
   try {
-    const { accessToken } = req.body;
+    const accessToken = asString(req.body.accessToken);
     if (!accessToken)
       return res.status(400).json({ message: 'Google access token required' });
 
+    const expectedAud = process.env.GOOGLE_CLIENT_ID;
+    if (!expectedAud) {
+      console.error('[auth/google] GOOGLE_CLIENT_ID env var not set');
+      return res.status(500).json({ message: 'Server misconfigured' });
+    }
+
+    // 1) Verify the token's audience matches our client. Google's tokeninfo
+    // endpoint returns { aud, sub, email, ... } for valid access tokens. If
+    // `aud` doesn't match, an attacker could be replaying an access token
+    // issued for a different OAuth client (token sidejacking).
+    const tokenInfoRes = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`
+    );
+    if (!tokenInfoRes.ok)
+      return res.status(401).json({ message: 'Invalid Google token' });
+    const tokenInfo = await tokenInfoRes.json();
+    if (tokenInfo.aud !== expectedAud) {
+      console.warn('[auth/google] aud mismatch', { got: tokenInfo.aud });
+      return res.status(401).json({ message: 'Invalid Google token' });
+    }
+
+    // 2) Fetch the userinfo (email + sub).
     const googleRes = await fetch(
       `https://www.googleapis.com/oauth2/v3/userinfo`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -121,6 +168,8 @@ router.post('/google', async (req, res) => {
       return res.status(401).json({ message: 'Invalid Google token' });
 
     const { sub: googleId, email } = await googleRes.json();
+    if (!googleId || !isEmailish(email))
+      return res.status(401).json({ message: 'Invalid Google token' });
 
     let user = await User.findOne({ googleId });
     if (!user) {
@@ -138,7 +187,8 @@ router.post('/google', async (req, res) => {
       user: serializeUser(user),
     });
   } catch (err) {
-    res.status(401).json({ message: 'Google authentication failed', error: err.message });
+    console.error('[auth/google]', err);
+    return res.status(401).json({ message: 'Google authentication failed' });
   }
 });
 
@@ -148,18 +198,17 @@ router.get('/me', verifyToken, async (req, res) => {
     if (!user) return res.status(404).json({ message: 'User not found' });
     res.json({ user: serializeUser(user) });
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
+    return handle500(res, 'auth/me', err);
   }
 });
 
 router.patch('/me', verifyToken, async (req, res) => {
   try {
-    const { username, displayName, bio, dateOfBirth } = req.body;
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    if (username !== undefined) {
-      const u = String(username).toLowerCase().trim();
+    if (req.body.username !== undefined) {
+      const u = asString(req.body.username).toLowerCase().trim();
       if (!User.USERNAME_REGEX.test(u)) {
         return res.status(400).json({
           message: 'Username must be 3–20 chars: lowercase letters, digits, _ or .',
@@ -172,20 +221,20 @@ router.patch('/me', verifyToken, async (req, res) => {
       }
     }
 
-    if (displayName !== undefined) {
-      const d = String(displayName).trim();
+    if (req.body.displayName !== undefined) {
+      const d = asString(req.body.displayName).trim();
       if (d.length > 50) return res.status(400).json({ message: 'Display name too long (max 50)' });
       user.displayName = d || undefined;
     }
 
-    if (bio !== undefined) {
-      const b = String(bio).trim();
+    if (req.body.bio !== undefined) {
+      const b = asString(req.body.bio).trim();
       if (b.length > 200) return res.status(400).json({ message: 'Bio too long (max 200)' });
       user.bio = b || undefined;
     }
 
-    if (dateOfBirth !== undefined) {
-      const d = new Date(dateOfBirth);
+    if (req.body.dateOfBirth !== undefined) {
+      const d = new Date(asString(req.body.dateOfBirth) || req.body.dateOfBirth);
       if (Number.isNaN(d.getTime())) return res.status(400).json({ message: 'Invalid date of birth' });
       const age = ageInYears(d);
       if (age < MIN_AGE_YEARS) return res.status(400).json({ message: `Must be at least ${MIN_AGE_YEARS} years old` });
@@ -197,7 +246,7 @@ router.patch('/me', verifyToken, async (req, res) => {
     res.json({ user: serializeUser(user) });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ message: 'Username taken' });
-    res.status(500).json({ message: 'Server error', error: err.message });
+    return handle500(res, 'auth/patch-me', err);
   }
 });
 

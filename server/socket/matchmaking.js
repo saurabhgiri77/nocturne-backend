@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const CallLog = require('../models/CallLog');
 const User = require('../models/User');
 
@@ -30,7 +31,11 @@ const handleMatchmaking = (io, socket) => {
       const [waitingSocketId, waitingData] = waitingQueue.entries().next().value;
       waitingQueue.delete(waitingSocketId);
 
-      const roomId = `room__${Date.now()}`;
+      // Crypto-strong room ID. Date.now()-based IDs were enumerable: an
+      // attacker could spray timestamps around a known login window and hit
+      // live rooms. Combined with a missing membership check on signaling
+      // events, that was a complete call-hijack chain.
+      const roomId = `room_${crypto.randomBytes(16).toString('hex')}`;
 
       const room = {
         userA: socket.id, // initiator → will createOffer()

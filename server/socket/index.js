@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { handleMatchmaking } = require('./matchmaking');
 const { handleSignaling } = require('./signaling');
+const { handleMessages } = require('./messages');
 
 const initSocket = (io) => {
   // JWT auth middleware — runs before any event handler. Also rejects
@@ -42,6 +43,7 @@ const initSocket = (io) => {
 
     handleMatchmaking(io, socket);
     handleSignaling(io, socket);
+    handleMessages(io, socket);
 
     socket.on('disconnect', (reason) => {
       console.log(`[disconnect] userId=${socket.user.id}  reason=${reason}`);

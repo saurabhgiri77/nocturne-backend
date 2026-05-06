@@ -2,6 +2,7 @@ const router = require('express').Router();
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Friendship = require('../models/Friendship');
+const Message = require('../models/Message');
 const verifyToken = require('../middleware/verifyToken');
 
 const signToken = (id) =>
@@ -35,6 +36,21 @@ const fetchPendingFriendCount = async (userId) => {
     return 0;
   }
 };
+
+// Unread DMs targeting this user. Same pattern as the friend-count badge.
+const fetchUnreadMessageCount = async (userId) => {
+  try {
+    return await Message.countDocuments({ to: userId, readAt: null });
+  } catch {
+    return 0;
+  }
+};
+
+// Bundles both counts so the auth handlers stay one-liners.
+const fetchUserCounts = async (userId) => ({
+  pendingFriendCount: await fetchPendingFriendCount(userId),
+  unreadMessageCount: await fetchUnreadMessageCount(userId),
+});
 
 // Returns a 403 response shaped so the frontend can show a suspension banner.
 const respondSuspended = (res, user) =>
@@ -121,7 +137,7 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({
       token: signToken(user._id),
-      user: serializeUser(user, { pendingFriendCount: await fetchPendingFriendCount(user._id) }),
+      user: serializeUser(user, await fetchUserCounts(user._id)),
     });
   } catch (err) {
     if (err.code === 11000) {
@@ -153,7 +169,7 @@ router.post('/login', async (req, res) => {
 
     res.status(200).json({
       token: signToken(user._id),
-      user: serializeUser(user, { pendingFriendCount: await fetchPendingFriendCount(user._id) }),
+      user: serializeUser(user, await fetchUserCounts(user._id)),
     });
   } catch (err) {
     return handle500(res, 'auth/login', err);
@@ -214,7 +230,7 @@ router.post('/google', async (req, res) => {
 
     res.status(200).json({
       token: signToken(user._id),
-      user: serializeUser(user, { pendingFriendCount: await fetchPendingFriendCount(user._id) }),
+      user: serializeUser(user, await fetchUserCounts(user._id)),
     });
   } catch (err) {
     console.error('[auth/google]', err);
@@ -227,7 +243,7 @@ router.get('/me', verifyToken, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.isSuspended()) return respondSuspended(res, user);
-    res.json({ user: serializeUser(user, { pendingFriendCount: await fetchPendingFriendCount(user._id) }) });
+    res.json({ user: serializeUser(user, await fetchUserCounts(user._id)) });
   } catch (err) {
     return handle500(res, 'auth/me', err);
   }
@@ -274,7 +290,7 @@ router.patch('/me', verifyToken, async (req, res) => {
     }
 
     await user.save();
-    res.json({ user: serializeUser(user, { pendingFriendCount: await fetchPendingFriendCount(user._id) }) });
+    res.json({ user: serializeUser(user, await fetchUserCounts(user._id)) });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ message: 'Username taken' });
     return handle500(res, 'auth/patch-me', err);

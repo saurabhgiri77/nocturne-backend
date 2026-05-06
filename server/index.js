@@ -38,6 +38,7 @@ connectDB();
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/reports", require("./routes/reports"));
 app.use("/api/friends", require("./routes/friends"));
+app.use("/api/messages", require("./routes/messages"));
 
 // Expose the io instance to routes (e.g. friends.js emits friend_request_received
 // to the recipient's user room). Reach via `req.app.get('io')`.

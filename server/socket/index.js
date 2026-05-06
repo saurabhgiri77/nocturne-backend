@@ -35,6 +35,11 @@ const initSocket = (io) => {
   io.on('connection', (socket) => {
     console.log(`[connect]  userId=${socket.user.id}  socketId=${socket.id}`);
 
+    // Each connected socket joins a room named after its userId so REST
+    // routes (e.g. /api/friends/:userId/request) can `io.to(userRoom(id)).emit(...)`
+    // without keeping their own socketId map.
+    socket.join(`user:${socket.user.id}`);
+
     handleMatchmaking(io, socket);
     handleSignaling(io, socket);
 

@@ -15,7 +15,20 @@ const serializeUser = (user) => ({
   displayName: user.displayName || null,
   bio: user.bio || null,
   dateOfBirth: user.dateOfBirth || null,
+  // Only included if currently suspended in the future. Frontend reads this
+  // to show the "suspended until X" banner.
+  suspendedUntil:
+    user.suspendedUntil && user.suspendedUntil > new Date()
+      ? user.suspendedUntil
+      : null,
 });
+
+// Returns a 403 response shaped so the frontend can show a suspension banner.
+const respondSuspended = (res, user) =>
+  res.status(403).json({
+    message: 'Your account is suspended.',
+    suspendedUntil: user.suspendedUntil,
+  });
 
 // Minimum age to sign up. Mirror this in the frontend's constants/policy.js.
 const MIN_AGE_YEARS = 18;
@@ -123,6 +136,8 @@ router.post('/login', async (req, res) => {
     if (!ok)
       return res.status(401).json({ message: 'Invalid credentials' });
 
+    if (user.isSuspended()) return respondSuspended(res, user);
+
     res.status(200).json({
       token: signToken(user._id),
       user: serializeUser(user),
@@ -182,6 +197,8 @@ router.post('/google', async (req, res) => {
       }
     }
 
+    if (user.isSuspended()) return respondSuspended(res, user);
+
     res.status(200).json({
       token: signToken(user._id),
       user: serializeUser(user),
@@ -196,6 +213,7 @@ router.get('/me', verifyToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.isSuspended()) return respondSuspended(res, user);
     res.json({ user: serializeUser(user) });
   } catch (err) {
     return handle500(res, 'auth/me', err);

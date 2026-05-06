@@ -24,6 +24,11 @@ const userSchema = new mongoose.Schema(
     displayName: { type: String, trim: true, maxlength: 50 },
     bio: { type: String, trim: true, maxlength: 200 },
     dateOfBirth: { type: Date },
+
+    // Auto-suspension: set when N distinct reporters flag this user inside
+    // the suspension window (see routes/reports.js). Login + socket connect
+    // refuse while this is in the future. Null/missing = not suspended.
+    suspendedUntil: { type: Date },
   },
   { timestamps: true }
 );
@@ -36,6 +41,10 @@ userSchema.pre('save', async function (next) {
 
 userSchema.methods.comparePassword = function (candidate) {
   return bcrypt.compare(candidate, this.passwordHash);
+};
+
+userSchema.methods.isSuspended = function () {
+  return !!this.suspendedUntil && this.suspendedUntil > new Date();
 };
 
 module.exports = mongoose.model('User', userSchema);

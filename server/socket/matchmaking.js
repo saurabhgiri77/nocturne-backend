@@ -6,46 +6,52 @@ const User = require('../models/User');
 const waitingQueue = new Map(); // socketId → { socket, userId, profile, joinedAt }
 const activeRooms = new Map();  // roomId   → room object
 
-// After this long in the queue, a user's language filter "expires" — they
-// become matchable with anyone, and any newcomer is allowed to pair with
-// them regardless of language overlap. Prevents indefinite waits in low-
-// population language buckets.
+// Tiered soft-fallback. The newcomer is always fresh; the WAITER's age
+// determines how strict we are:
+//   - waiter < 10s  → require shared language AND shared interest
+//   - waiter 10–15s → require shared language only (interest expired)
+//   - waiter ≥ 15s  → match anyone (both expired)
 const FILTER_TIMEOUT_MS = 15000;
+const INTEREST_TIMEOUT_MS = 10000;
 
 // Look up the public-facing profile bits we need for matchmaking +
 // match_found display.
 const fetchProfile = async (userId) => {
   try {
     const u = await User.findById(userId)
-      .select('username displayName languages country')
+      .select('username displayName languages country interests')
       .lean();
     return {
       username: u?.username || null,
       displayName: u?.displayName || null,
       languages: Array.isArray(u?.languages) ? u.languages : [],
       country: u?.country || null,
+      interests: Array.isArray(u?.interests) ? u.interests : [],
     };
   } catch {
-    return { username: null, displayName: null, languages: [], country: null };
+    return { username: null, displayName: null, languages: [], country: null, interests: [] };
   }
 };
 
-// Two users are language-compatible if either has no preference, or they
-// share at least one language.
+// Empty preference on either side = "match anyone" (doesn't fragment the
+// queue further); otherwise need ≥1 overlap.
 const sharesLanguage = (a, b) => {
   if (!a.profile.languages.length || !b.profile.languages.length) return true;
   return a.profile.languages.some((l) => b.profile.languages.includes(l));
 };
+const sharesInterest = (a, b) => {
+  if (!a.profile.interests.length || !b.profile.interests.length) return true;
+  return a.profile.interests.some((i) => b.profile.interests.includes(i));
+};
 
-// Find the first waiter in the queue that the newcomer can be paired with.
-// Pair if they share a language OR if the waiter's filter has timed out.
-// Newcomer is always fresh (joinedAt = now) so their own filter never
-// "expires" mid-call — that's fine, the OTHER side's expiry covers them.
+// Pick the first queued waiter that meets the tiered compatibility bar.
 const findCompatible = (newcomer) => {
   const now = Date.now();
   for (const [otherSocketId, other] of waitingQueue) {
-    const otherExpired = now - other.joinedAt > FILTER_TIMEOUT_MS;
-    if (sharesLanguage(newcomer, other) || otherExpired) {
+    const waitedFor = now - other.joinedAt;
+    const langOk = sharesLanguage(newcomer, other) || waitedFor > FILTER_TIMEOUT_MS;
+    const interestOk = sharesInterest(newcomer, other) || waitedFor > INTEREST_TIMEOUT_MS;
+    if (langOk && interestOk) {
       return [otherSocketId, other];
     }
   }
@@ -91,6 +97,7 @@ const handleMatchmaking = (io, socket) => {
         peerUsername: other.profile.username,
         peerDisplayName: other.profile.displayName,
         peerCountry: other.profile.country,
+        peerInterests: other.profile.interests,
       });
       other.socket.emit('match_found', {
         roomId,
@@ -99,10 +106,11 @@ const handleMatchmaking = (io, socket) => {
         peerUsername: myProfile.username,
         peerDisplayName: myProfile.displayName,
         peerCountry: myProfile.country,
+        peerInterests: myProfile.interests,
       });
 
       console.log(
-        `[match] ${socket.user.id} <-> ${other.userId}  room=${roomId}  langs=${myProfile.languages.join(',') || '∅'} ∩ ${other.profile.languages.join(',') || '∅'}`
+        `[match] ${socket.user.id} <-> ${other.userId}  room=${roomId}  langs=${myProfile.languages.join(',') || '∅'} ∩ ${other.profile.languages.join(',') || '∅'}  interests=${myProfile.interests.join(',') || '∅'} ∩ ${other.profile.interests.join(',') || '∅'}`
       );
     } else {
       waitingQueue.set(socket.id, newcomer);

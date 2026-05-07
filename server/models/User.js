@@ -35,6 +35,11 @@ const userSchema = new mongoose.Schema(
     // falls back to global pairing after 15s.
     languages: { type: [String], default: undefined },
 
+    // Curated lowercase tags (e.g. 'music', 'gaming'). Used as a softer
+    // matchmaking signal alongside languages. Allowlist enforced in
+    // PATCH /me so the queue can't be polluted with arbitrary strings.
+    interests: { type: [String], default: undefined },
+
     // Auto-suspension: set when N distinct reporters flag this user inside
     // the suspension window (see routes/reports.js). Login + socket connect
     // refuse while this is in the future. Null/missing = not suspended.

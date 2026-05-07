@@ -19,6 +19,7 @@ const serializeUser = (user, extras = {}) => ({
   dateOfBirth: user.dateOfBirth || null,
   country: user.country || null,
   languages: Array.isArray(user.languages) ? user.languages : [],
+  interests: Array.isArray(user.interests) ? user.interests : [],
   // Only included if currently suspended in the future. Frontend reads this
   // to show the "suspended until X" banner.
   suspendedUntil:
@@ -86,6 +87,19 @@ const detectCountryFromIP = async (ip) => {
 // reject niche codes if added later.
 const LANGUAGE_CODE_RE = /^[a-z]{2,3}(-[A-Z0-9]{2,3})?$/;
 const MAX_LANGUAGES = 5;
+
+// Interests are a CLOSED set — we want every user picking from the same
+// vocabulary so the queue doesn't fragment on case / typos. Mirror this
+// list in the frontend's constants/interests.js (any drift would just mean
+// the new code rejects with 400, which is fine).
+const INTEREST_CODES = new Set([
+  'music', 'gaming', 'movies', 'anime', 'books', 'sports', 'fitness', 'travel',
+  'cooking', 'art', 'photography', 'tech', 'coding', 'science', 'philosophy',
+  'language_exchange', 'study', 'pets', 'nature', 'fashion', 'meditation',
+  'writing', 'dance', 'memes', 'cars', 'design', 'gardening', 'comedy',
+  'finance', 'crypto',
+]);
+const MAX_INTERESTS = 5;
 
 // Returns a 403 response shaped so the frontend can show a suspension banner.
 const respondSuspended = (res, user) =>
@@ -366,6 +380,27 @@ router.patch('/me', verifyToken, async (req, res) => {
         }
       }
       user.languages = cleaned.length > 0 ? cleaned : undefined;
+    }
+
+    if (req.body.interests !== undefined) {
+      if (!Array.isArray(req.body.interests)) {
+        return res.status(400).json({ message: 'Interests must be an array' });
+      }
+      const cleaned = [...new Set(
+        req.body.interests
+          .filter((i) => typeof i === 'string')
+          .map((i) => i.trim().toLowerCase())
+          .filter(Boolean)
+      )];
+      if (cleaned.length > MAX_INTERESTS) {
+        return res.status(400).json({ message: `Pick at most ${MAX_INTERESTS} interests` });
+      }
+      for (const code of cleaned) {
+        if (!INTEREST_CODES.has(code)) {
+          return res.status(400).json({ message: `Unknown interest: ${code}` });
+        }
+      }
+      user.interests = cleaned.length > 0 ? cleaned : undefined;
     }
 
     await user.save();

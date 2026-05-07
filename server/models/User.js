@@ -25,6 +25,16 @@ const userSchema = new mongoose.Schema(
     bio: { type: String, trim: true, maxlength: 200 },
     dateOfBirth: { type: Date },
 
+    // ISO 3166-1 alpha-2 (e.g. 'IN'). Auto-detected from IP at signup
+    // when possible; user-editable from ProfileEditModal. Display-only —
+    // not used for queue filtering.
+    country: { type: String, uppercase: true, match: /^[A-Z]{2}$/ },
+
+    // BCP-47 short codes (e.g. 'en', 'hi'). Used for queue bucketing —
+    // matchmaking prefers peers with at least one shared language, and
+    // falls back to global pairing after 15s.
+    languages: { type: [String], default: undefined },
+
     // Auto-suspension: set when N distinct reporters flag this user inside
     // the suspension window (see routes/reports.js). Login + socket connect
     // refuse while this is in the future. Null/missing = not suspended.

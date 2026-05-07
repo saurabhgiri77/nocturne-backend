@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const Friendship = require('../models/Friendship');
+const { checkSocketLimit } = require('./rateLimit');
 
 const MAX_DM_LENGTH = 2000;
 
@@ -10,6 +11,9 @@ const handleMessages = (io, socket) => {
   // Client → server. Payload: { to, body }. Optional ack callback so the
   // sender's UI can resolve cleanly with the persisted message.
   socket.on('dm_message', async (payload, ack) => {
+    if (!checkSocketLimit(socket, 'dm_message')) {
+      return typeof ack === 'function' && ack({ ok: false, error: 'rate_limited' });
+    }
     try {
       const to = typeof payload?.to === 'string' ? payload.to : '';
       const body = typeof payload?.body === 'string' ? payload.body : '';

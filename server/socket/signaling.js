@@ -1,4 +1,5 @@
 const { activeRooms, saveCallLog } = require('./matchmaking');
+const { checkSocketLimit } = require('./rateLimit');
 
 const MAX_CHAT_LENGTH = 1000;
 
@@ -43,6 +44,7 @@ const handleSignaling = (io, socket) => {
 
   // Both directions, trickle
   socket.on('ice_candidate', ({ roomId, candidate }) => {
+    if (!checkSocketLimit(socket, 'ice_candidate')) return;
     const room = memberRoom(roomId, socket.id);
     if (!room) return;
     getPeer(io, room, socket.id)?.emit('ice_candidate', { candidate });
@@ -50,6 +52,7 @@ const handleSignaling = (io, socket) => {
 
   // Peer media state (mic/camera on/off)
   socket.on('media_state', ({ roomId, micEnabled, cameraEnabled }) => {
+    if (!checkSocketLimit(socket, 'media_state')) return;
     const room = memberRoom(roomId, socket.id);
     if (!room) return;
     getPeer(io, room, socket.id)?.emit('media_state', {
@@ -60,6 +63,7 @@ const handleSignaling = (io, socket) => {
 
   // Chat — relay only, NEVER persist
   socket.on('chat_message', ({ roomId, message }) => {
+    if (!checkSocketLimit(socket, 'chat_message')) return;
     const room = memberRoom(roomId, socket.id);
     if (!room) return;
     if (!message || typeof message !== 'string') return;
@@ -73,6 +77,27 @@ const handleSignaling = (io, socket) => {
     });
   });
 
+  // Reconnection probe. Frontend re-emits this with its current roomId
+  // after a socket reconnect. If the room is gone (e.g. backend restarted
+  // mid-call and wiped the in-memory activeRooms map), the server tells
+  // the client it's been orphaned so the UI can bounce to the lobby
+  // instead of sitting in stale "Connecting..." forever.
+  socket.on('check_room', ({ roomId }) => {
+    if (typeof roomId !== 'string') return;
+    const room = activeRooms.get(roomId);
+    if (!room) {
+      socket.emit('match_lost', { roomId });
+      socket.roomId = null;
+    } else if (room.userA !== socket.id && room.userB !== socket.id) {
+      // Caller claims to be in a room they're not actually a member of.
+      // Same outcome — lost.
+      socket.emit('match_lost', { roomId });
+    } else {
+      // Re-attach socket.roomId so end_call / disconnect cleanup still works.
+      socket.roomId = roomId;
+    }
+  });
+
   // Voluntary skip / end call
   socket.on('end_call', async ({ roomId }) => {
     const room = memberRoom(roomId, socket.id);
@@ -81,7 +106,7 @@ const handleSignaling = (io, socket) => {
     const peer = getPeer(io, room, socket.id);
     const endedBy = room.userA === socket.id ? 'userA' : 'userB';
 
-    peer?.emit('call_ended', { reason: 'peer_skipped' });
+    peer?.emit('call_ended', { reason: 'peer_skipped', roomId });
     if (peer) peer.roomId = null;
     socket.roomId = null;
 

@@ -6,7 +6,9 @@ const Friendship = require('../models/Friendship');
 const Message = require('../models/Message');
 const EmailVerification = require('../models/EmailVerification');
 const { sendVerificationEmail } = require('../lib/mailer');
+const { block: blockToken } = require('../lib/tokenBlocklist');
 const verifyToken = require('../middleware/verifyToken');
+const { loginLimiter, registerLimiter, googleLimiter } = require('../middleware/rateLimit');
 
 const signToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -173,7 +175,7 @@ const ageInYears = (dob) => {
   return age;
 };
 
-router.post('/register', async (req, res) => {
+router.post('/register', registerLimiter, async (req, res) => {
   try {
     const email = asString(req.body.email).toLowerCase().trim();
     const password = asString(req.body.password);
@@ -250,7 +252,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const email = asString(req.body.email).toLowerCase().trim();
     const password = asString(req.body.password);
@@ -279,7 +281,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-router.post('/google', async (req, res) => {
+router.post('/google', googleLimiter, async (req, res) => {
   try {
     const accessToken = asString(req.body.accessToken);
     if (!accessToken)
@@ -463,13 +465,45 @@ router.patch('/me', verifyToken, async (req, res) => {
   }
 });
 
+// POST /api/auth/logout — invalidates the bearer token by adding its
+// fingerprint to the in-memory blocklist until natural expiry. Without this
+// step a stolen token stays valid for the full JWT TTL (7d).
+router.post('/logout', verifyToken, async (req, res) => {
+  try {
+    // req.user.exp is unix-seconds. Convert to ms.
+    const expiresAtMs = (req.user.exp || Math.floor(Date.now() / 1000) + 60) * 1000;
+    blockToken(req.token, expiresAtMs);
+    res.json({ ok: true });
+  } catch (err) {
+    return handle500(res, 'auth/logout', err);
+  }
+});
+
 // POST /api/auth/verify/send — re-issue a verification token + send email.
 // Auth-required so a stranger can't trigger emails to arbitrary inboxes.
+// 60s cooldown per user prevents spamming our SMTP quota / their inbox.
+const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 router.post('/verify/send', verifyToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.emailVerified) return res.status(400).json({ message: 'Email already verified' });
+
+    // Cooldown: refuse if a token was issued for this user in the last 60s.
+    const recent = await EmailVerification.findOne({ user: user._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (recent && Date.now() - new Date(recent.createdAt).getTime() < VERIFICATION_RESEND_COOLDOWN_MS) {
+      const retryAfter = Math.ceil(
+        (VERIFICATION_RESEND_COOLDOWN_MS - (Date.now() - new Date(recent.createdAt).getTime())) / 1000
+      );
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({
+        message: `Please wait ${retryAfter}s before requesting another email.`,
+        retryAfter,
+      });
+    }
+
     await issueAndSendVerification(user);
     res.json({ ok: true });
   } catch (err) {

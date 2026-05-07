@@ -1,6 +1,11 @@
 const crypto = require('crypto');
 const CallLog = require('../models/CallLog');
 const User = require('../models/User');
+const { checkSocketLimit } = require('./rateLimit');
+
+// Truncate a user ID for logging — first 6 hex chars is enough to debug a
+// session without leaving full PII in log aggregators.
+const tag = (id) => (id ? String(id).slice(0, 6) : '?');
 
 // In-memory stores — module-level (persist for lifetime of process)
 const waitingQueue = new Map(); // socketId → { socket, userId, profile, joinedAt }
@@ -60,6 +65,7 @@ const findCompatible = (newcomer) => {
 
 const handleMatchmaking = (io, socket) => {
   socket.on('join_queue', async () => {
+    if (!checkSocketLimit(socket, 'join_queue')) return;
     if (waitingQueue.has(socket.id)) return; // already queued
 
     const myProfile = await fetchProfile(socket.user.id);
@@ -110,18 +116,19 @@ const handleMatchmaking = (io, socket) => {
       });
 
       console.log(
-        `[match] ${socket.user.id} <-> ${other.userId}  room=${roomId}  langs=${myProfile.languages.join(',') || '∅'} ∩ ${other.profile.languages.join(',') || '∅'}  interests=${myProfile.interests.join(',') || '∅'} ∩ ${other.profile.interests.join(',') || '∅'}`
+        `[match] ${tag(socket.user.id)} <-> ${tag(other.userId)}  langs=${myProfile.languages.join(',') || '∅'} ∩ ${other.profile.languages.join(',') || '∅'}  interests=${myProfile.interests.join(',') || '∅'} ∩ ${other.profile.interests.join(',') || '∅'}`
       );
     } else {
       waitingQueue.set(socket.id, newcomer);
       socket.emit('waiting', { message: 'Waiting for a match...' });
       console.log(
-        `[queue] ${socket.user.id} waiting | langs=${myProfile.languages.join(',') || '∅'} | queue=${waitingQueue.size}`
+        `[queue] ${tag(socket.user.id)} waiting | langs=${myProfile.languages.join(',') || '∅'} | queue=${waitingQueue.size}`
       );
     }
   });
 
   socket.on('leave_queue', () => {
+    if (!checkSocketLimit(socket, 'leave_queue')) return;
     waitingQueue.delete(socket.id);
     socket.emit('left_queue');
   });
@@ -130,17 +137,20 @@ const handleMatchmaking = (io, socket) => {
     waitingQueue.delete(socket.id);
 
     if (socket.roomId) {
-      const room = activeRooms.get(socket.roomId);
+      const roomIdAtDisconnect = socket.roomId;
+      const room = activeRooms.get(roomIdAtDisconnect);
       if (room) {
         const peerSocketId =
           room.userA === socket.id ? room.userB : room.userA;
         const peer = io.sockets.sockets.get(peerSocketId);
         if (peer) {
-          peer.emit('peer_disconnected');
+          // Include roomId so the recipient can ignore the event if they've
+          // already moved on (e.g. raced with their own skip).
+          peer.emit('peer_disconnected', { roomId: roomIdAtDisconnect });
           peer.roomId = null;
         }
         await saveCallLog(room, 'disconnect');
-        activeRooms.delete(socket.roomId);
+        activeRooms.delete(roomIdAtDisconnect);
       }
     }
   });

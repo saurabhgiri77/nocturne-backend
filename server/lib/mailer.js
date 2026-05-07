@@ -33,6 +33,12 @@ const init = () => {
     secure: port === 465, // 465 = TLS, 587 = STARTTLS (most common for Gmail)
     auth: { user, pass },
   });
+  // Async, non-blocking. Surfaces credential / network issues at boot
+  // (well, first send) instead of waiting for a real signup to fail.
+  transporter
+    .verify()
+    .then(() => console.log(`[mailer] SMTP ready (${host}:${port})`))
+    .catch((err) => console.error('[mailer] SMTP verify failed:', err.message));
   return transporter;
 };
 

@@ -34,7 +34,8 @@ const initSocket = (io) => {
   });
 
   io.on('connection', (socket) => {
-    console.log(`[connect]  userId=${socket.user.id}  socketId=${socket.id}`);
+    const userTag = String(socket.user.id || '').slice(0, 6);
+    console.log(`[connect]  user=${userTag}  sock=${socket.id.slice(0, 6)}`);
 
     // Each connected socket joins a room named after its userId so REST
     // routes (e.g. /api/friends/:userId/request) can `io.to(userRoom(id)).emit(...)`
@@ -46,7 +47,7 @@ const initSocket = (io) => {
     handleMessages(io, socket);
 
     socket.on('disconnect', (reason) => {
-      console.log(`[disconnect] userId=${socket.user.id}  reason=${reason}`);
+      console.log(`[disconnect] user=${userTag}  reason=${reason}`);
     });
   });
 };

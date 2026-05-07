@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Report = require('../models/Report');
 const User = require('../models/User');
 const verifyToken = require('../middleware/verifyToken');
+const { reportLimiter } = require('../middleware/rateLimit');
 
 // Auto-suspension policy. ≥3 distinct reporters in 24h → 24h suspension.
 // Permanent bans require manual review and aren't done here.
@@ -12,7 +13,7 @@ const SUSPENSION_DURATION_MS = 24 * 60 * 60 * 1000;
 
 const asString = (v) => (typeof v === 'string' ? v : '');
 
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, reportLimiter, async (req, res) => {
   try {
     const reportedUserId = asString(req.body.reportedUserId);
     const roomId = asString(req.body.roomId);

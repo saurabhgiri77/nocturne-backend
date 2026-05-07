@@ -44,6 +44,13 @@ const userSchema = new mongoose.Schema(
     // the suspension window (see routes/reports.js). Login + socket connect
     // refuse while this is in the future. Null/missing = not suspended.
     suspendedUntil: { type: Date },
+
+    // Email verification status. Email signups start false (must click
+    // the link). Google sign-ins start true (Google already verified the
+    // address). Used as a soft signal — banner nags unverified users but
+    // nothing is blocked.
+    emailVerified: { type: Boolean, default: false },
+    emailVerifiedAt: { type: Date },
   },
   { timestamps: true }
 );

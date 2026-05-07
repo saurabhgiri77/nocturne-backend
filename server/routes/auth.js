@@ -1,8 +1,11 @@
 const router = require('express').Router();
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Friendship = require('../models/Friendship');
 const Message = require('../models/Message');
+const EmailVerification = require('../models/EmailVerification');
+const { sendVerificationEmail } = require('../lib/mailer');
 const verifyToken = require('../middleware/verifyToken');
 
 const signToken = (id) =>
@@ -20,6 +23,7 @@ const serializeUser = (user, extras = {}) => ({
   country: user.country || null,
   languages: Array.isArray(user.languages) ? user.languages : [],
   interests: Array.isArray(user.interests) ? user.interests : [],
+  emailVerified: !!user.emailVerified,
   // Only included if currently suspended in the future. Frontend reads this
   // to show the "suspended until X" banner.
   suspendedUntil:
@@ -54,6 +58,39 @@ const fetchUserCounts = async (userId) => ({
   pendingFriendCount: await fetchPendingFriendCount(userId),
   unreadMessageCount: await fetchUnreadMessageCount(userId),
 });
+
+// Where the frontend lives — needed to build /verify/:token links in the
+// email body. Falls back to the first ALLOWED_ORIGINS entry if FRONTEND_URL
+// isn't set, since that's the deployed origin in 99% of cases.
+const frontendBase = () =>
+  process.env.FRONTEND_URL ||
+  (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)[0] ||
+  '';
+
+// Mint a fresh email-verification token, persist it, and send the email.
+// Old unused tokens for the same user are flushed so a "Resend" doesn't
+// leave a trail of valid links. Failure to actually send (SMTP issues)
+// is logged but doesn't bubble up — the user can hit "Resend" later.
+const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+const issueAndSendVerification = async (user) => {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + VERIFICATION_TTL_MS);
+  // Invalidate any prior unused tokens — only the freshest one works.
+  await EmailVerification.deleteMany({ user: user._id, used: false });
+  await EmailVerification.create({ user: user._id, token, expiresAt });
+  const base = frontendBase();
+  if (!base) {
+    console.warn('[mailer] FRONTEND_URL / ALLOWED_ORIGINS not set — skipping verification email');
+    return;
+  }
+  const link = `${base.replace(/\/$/, '')}/verify/${token}`;
+  try {
+    await sendVerificationEmail({ to: user.email, link });
+  } catch (err) {
+    console.error('[mailer] verification send failed:', err.message);
+  }
+};
 
 // Best-effort IP → country lookup using ip-api.com (free, no auth, 45 req/min).
 // Returns ISO 3166-1 alpha-2 code or null. Skips loopback / private IPs.
@@ -191,8 +228,15 @@ router.post('/register', async (req, res) => {
       username: usernameRaw,
       dateOfBirth: dob,
       country: country || undefined,
+      // emailVerified defaults to false — verification email follows.
     });
     await user.save();
+
+    // Fire-and-forget the verification email. Don't block the response on
+    // SMTP latency; the user can hit "Resend" if it never arrives.
+    issueAndSendVerification(user).catch((err) =>
+      console.error('[register] verification dispatch failed:', err.message)
+    );
 
     res.status(201).json({
       token: signToken(user._id),
@@ -282,8 +326,16 @@ router.post('/google', async (req, res) => {
         await user.save();
       } else {
         // Net-new account via Google. Same best-effort IP-geo as /register.
+        // Google has already verified the email address, so we mark
+        // emailVerified=true immediately — no separate verification needed.
         const country = await detectCountryFromIP(req.ip);
-        user = await User.create({ email, googleId, country: country || undefined });
+        user = await User.create({
+          email,
+          googleId,
+          country: country || undefined,
+          emailVerified: true,
+          emailVerifiedAt: new Date(),
+        });
       }
     }
 
@@ -408,6 +460,51 @@ router.patch('/me', verifyToken, async (req, res) => {
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ message: 'Username taken' });
     return handle500(res, 'auth/patch-me', err);
+  }
+});
+
+// POST /api/auth/verify/send — re-issue a verification token + send email.
+// Auth-required so a stranger can't trigger emails to arbitrary inboxes.
+router.post('/verify/send', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.emailVerified) return res.status(400).json({ message: 'Email already verified' });
+    await issueAndSendVerification(user);
+    res.json({ ok: true });
+  } catch (err) {
+    return handle500(res, 'auth/verify-send', err);
+  }
+});
+
+// POST /api/auth/verify — token IS the auth here (no Bearer required). User
+// got the token by clicking the email link, so possessing it proves email
+// ownership. Token single-use, expires in 24h.
+router.post('/verify', async (req, res) => {
+  try {
+    const token = asString(req.body.token);
+    if (!token || token.length < 16) {
+      return res.status(400).json({ message: 'Invalid token' });
+    }
+    const record = await EmailVerification.findOne({ token, used: false });
+    if (!record) return res.status(400).json({ message: 'Invalid or already-used token' });
+    if (record.expiresAt < new Date()) {
+      return res.status(400).json({ message: 'Token expired — request a new one' });
+    }
+    const user = await User.findById(record.user);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    if (!user.emailVerified) {
+      user.emailVerified = true;
+      user.emailVerifiedAt = new Date();
+      await user.save();
+    }
+    record.used = true;
+    await record.save();
+
+    res.json({ ok: true });
+  } catch (err) {
+    return handle500(res, 'auth/verify', err);
   }
 });
 

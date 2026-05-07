@@ -13,6 +13,10 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .filter(Boolean);
 
 const app = express();
+// Render / Netlify / Cloudflare etc. terminate TLS in front of us. Trust the
+// first proxy hop so `req.ip` reflects the real client (used for IP-geo on
+// signup). One hop is conservative; bump if you stack proxies later.
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const { Server } = require("socket.io");
 const io = new Server(server, {

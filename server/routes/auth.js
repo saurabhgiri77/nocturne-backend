@@ -17,6 +17,8 @@ const serializeUser = (user, extras = {}) => ({
   displayName: user.displayName || null,
   bio: user.bio || null,
   dateOfBirth: user.dateOfBirth || null,
+  country: user.country || null,
+  languages: Array.isArray(user.languages) ? user.languages : [],
   // Only included if currently suspended in the future. Frontend reads this
   // to show the "suspended until X" banner.
   suspendedUntil:
@@ -51,6 +53,39 @@ const fetchUserCounts = async (userId) => ({
   pendingFriendCount: await fetchPendingFriendCount(userId),
   unreadMessageCount: await fetchUnreadMessageCount(userId),
 });
+
+// Best-effort IP → country lookup using ip-api.com (free, no auth, 45 req/min).
+// Returns ISO 3166-1 alpha-2 code or null. Skips loopback / private IPs.
+// Never throws — caller should treat null as "unknown".
+const detectCountryFromIP = async (ip) => {
+  if (!ip) return null;
+  // Strip IPv6-mapped IPv4 prefix that Node sometimes attaches.
+  const clean = ip.replace(/^::ffff:/, '');
+  if (clean === '127.0.0.1' || clean === '::1' || clean.startsWith('10.') || clean.startsWith('192.168.')) {
+    return null;
+  }
+  try {
+    const res = await fetch(
+      `http://ip-api.com/json/${encodeURIComponent(clean)}?fields=countryCode`,
+      { signal: AbortSignal.timeout(2000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (typeof data.countryCode === 'string' && /^[A-Z]{2}$/.test(data.countryCode)) {
+      return data.countryCode;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+// Languages stored as BCP-47 short codes (e.g. 'en', 'hi'). Allow letters
+// and an optional region tag, capped at 8 chars. Server doesn't enforce a
+// closed list — frontend picks from a curated set, but we don't want to
+// reject niche codes if added later.
+const LANGUAGE_CODE_RE = /^[a-z]{2,3}(-[A-Z0-9]{2,3})?$/;
+const MAX_LANGUAGES = 5;
 
 // Returns a 403 response shaped so the frontend can show a suspension banner.
 const respondSuspended = (res, user) =>
@@ -132,7 +167,17 @@ router.post('/register', async (req, res) => {
     if (await User.findOne({ username: usernameRaw }))
       return res.status(409).json({ message: 'Username taken' });
 
-    const user = new User({ email, passwordHash: password, username: usernameRaw, dateOfBirth: dob });
+    // Best-effort IP-geo. Failures (timeout, rate limit, private IP) leave
+    // country null; user can fill it in from ProfileEditModal later.
+    const country = await detectCountryFromIP(req.ip);
+
+    const user = new User({
+      email,
+      passwordHash: password,
+      username: usernameRaw,
+      dateOfBirth: dob,
+      country: country || undefined,
+    });
     await user.save();
 
     res.status(201).json({
@@ -222,7 +267,9 @@ router.post('/google', async (req, res) => {
         user.googleId = googleId;
         await user.save();
       } else {
-        user = await User.create({ email, googleId });
+        // Net-new account via Google. Same best-effort IP-geo as /register.
+        const country = await detectCountryFromIP(req.ip);
+        user = await User.create({ email, googleId, country: country || undefined });
       }
     }
 
@@ -287,6 +334,38 @@ router.patch('/me', verifyToken, async (req, res) => {
       if (age < MIN_AGE_YEARS) return res.status(400).json({ message: `Must be at least ${MIN_AGE_YEARS} years old` });
       if (age > 120) return res.status(400).json({ message: 'Invalid date of birth' });
       user.dateOfBirth = d;
+    }
+
+    if (req.body.country !== undefined) {
+      const c = asString(req.body.country).toUpperCase().trim();
+      if (c === '') {
+        user.country = undefined;
+      } else if (!/^[A-Z]{2}$/.test(c)) {
+        return res.status(400).json({ message: 'Country must be a 2-letter ISO code' });
+      } else {
+        user.country = c;
+      }
+    }
+
+    if (req.body.languages !== undefined) {
+      if (!Array.isArray(req.body.languages)) {
+        return res.status(400).json({ message: 'Languages must be an array' });
+      }
+      const cleaned = [...new Set(
+        req.body.languages
+          .filter((l) => typeof l === 'string')
+          .map((l) => l.trim())
+          .filter(Boolean)
+      )];
+      if (cleaned.length > MAX_LANGUAGES) {
+        return res.status(400).json({ message: `Pick at most ${MAX_LANGUAGES} languages` });
+      }
+      for (const code of cleaned) {
+        if (!LANGUAGE_CODE_RE.test(code)) {
+          return res.status(400).json({ message: `Invalid language code: ${code}` });
+        }
+      }
+      user.languages = cleaned.length > 0 ? cleaned : undefined;
     }
 
     await user.save();

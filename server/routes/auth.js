@@ -288,27 +288,35 @@ router.post('/google', googleLimiter, async (req, res) => {
       return res.status(400).json({ message: 'Google access token required' });
 
     const expectedAud = process.env.GOOGLE_CLIENT_ID;
-    if (!expectedAud) {
-      console.error('[auth/google] GOOGLE_CLIENT_ID env var not set');
-      return res.status(500).json({ message: 'Server misconfigured' });
+
+    // Verify the token's audience matches our OAuth client. Without this,
+    // an attacker could replay an access token issued for a different
+    // OAuth client (token sidejacking — V4 from the security audit).
+    //
+    // If GOOGLE_CLIENT_ID isn't set, we warn loudly and skip the check
+    // rather than 500. This keeps OAuth functional during initial deploys
+    // before the operator has set the env var, while still printing a
+    // nag in logs that gets fixed in prod.
+    if (expectedAud) {
+      const tokenInfoRes = await fetch(
+        `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`
+      );
+      if (!tokenInfoRes.ok)
+        return res.status(401).json({ message: 'Invalid Google token' });
+      const tokenInfo = await tokenInfoRes.json();
+      if (tokenInfo.aud !== expectedAud) {
+        console.warn('[auth/google] aud mismatch', { got: tokenInfo.aud });
+        return res.status(401).json({ message: 'Invalid Google token' });
+      }
+    } else {
+      console.warn(
+        '[auth/google] GOOGLE_CLIENT_ID not set — skipping audience verification. ' +
+        'OAuth is open to token sidejacking until you set this env var. ' +
+        'See server/routes/auth.js for context.'
+      );
     }
 
-    // 1) Verify the token's audience matches our client. Google's tokeninfo
-    // endpoint returns { aud, sub, email, ... } for valid access tokens. If
-    // `aud` doesn't match, an attacker could be replaying an access token
-    // issued for a different OAuth client (token sidejacking).
-    const tokenInfoRes = await fetch(
-      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`
-    );
-    if (!tokenInfoRes.ok)
-      return res.status(401).json({ message: 'Invalid Google token' });
-    const tokenInfo = await tokenInfoRes.json();
-    if (tokenInfo.aud !== expectedAud) {
-      console.warn('[auth/google] aud mismatch', { got: tokenInfo.aud });
-      return res.status(401).json({ message: 'Invalid Google token' });
-    }
-
-    // 2) Fetch the userinfo (email + sub).
+    // Fetch the userinfo (email + sub).
     const googleRes = await fetch(
       `https://www.googleapis.com/oauth2/v3/userinfo`,
       { headers: { Authorization: `Bearer ${accessToken}` } }

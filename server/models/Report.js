@@ -7,6 +7,11 @@ const REASONS = [
   'underage',
   'illegal_content',
   'other',
+  // AI-detected — emitted by the frontend's NSFW scanner on the receiving
+  // side. Counts toward auto-suspension same as a user report. Deduped
+  // per (reporter, roomId, 'auto_nsfw') in routes/reports.js so one bad
+  // actor can't be racked up to suspension from a single call.
+  'auto_nsfw',
 ];
 
 const reportSchema = new mongoose.Schema(

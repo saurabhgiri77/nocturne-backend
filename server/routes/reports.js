@@ -30,6 +30,18 @@ router.post('/', verifyToken, reportLimiter, async (req, res) => {
       return res.status(400).json({ message: 'You cannot report yourself' });
     }
 
+    // AI-flagged reports dedupe per (reporter, roomId) so one bad actor
+    // can't be auto-suspended just because the scanner flagged repeatedly
+    // within a single call. A second auto-flag in the same room is a no-op.
+    if (reason === 'auto_nsfw' && roomId) {
+      const dupe = await Report.findOne({
+        reporter: req.user.id,
+        roomId,
+        reason: 'auto_nsfw',
+      });
+      if (dupe) return res.status(200).json({ ok: true, deduplicated: true });
+    }
+
     await Report.create({
       reporter: req.user.id,
       reportedUser: reportedUserId || undefined,

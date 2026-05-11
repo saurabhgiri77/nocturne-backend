@@ -42,7 +42,7 @@ const init = () => {
   return transporter;
 };
 
-const FROM = process.env.EMAIL_FROM || 'Nocturne <noreply@nocturne.app>';
+const FROM = process.env.EMAIL_FROM || 'Bump <noreply@bump.app>';
 
 const sendMail = async ({ to, subject, text, html }) => {
   const t = init();
@@ -55,17 +55,17 @@ const sendMail = async ({ to, subject, text, html }) => {
 };
 
 const sendVerificationEmail = async ({ to, link }) => {
-  const subject = 'Verify your Nocturne email';
-  const text = `Welcome to Nocturne!
+  const subject = 'Verify your Bump email';
+  const text = `Welcome to Bump!
 
 Confirm your email by visiting:
 ${link}
 
-This link expires in 24 hours. If you didn't sign up for Nocturne, ignore this email.`;
+This link expires in 24 hours. If you didn't sign up for Bump, ignore this email.`;
   const html = `<!doctype html>
 <html><body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0e0e0e; color:#fff; padding:32px;">
   <div style="max-width:480px; margin:0 auto; background:#131313; border-radius:12px; padding:32px; text-align:center;">
-    <h1 style="font-size:22px; margin:0 0 8px;">Welcome to Nocturne</h1>
+    <h1 style="font-size:22px; margin:0 0 8px;">Welcome to Bump</h1>
     <p style="color:#adaaaa; margin:0 0 24px;">Confirm your email to finish signing up.</p>
     <a href="${link}" style="display:inline-block; padding:12px 28px; border-radius:9999px; background:linear-gradient(135deg, #ba9eff, #8455ef); color:#000; font-weight:700; text-decoration:none;">Verify email</a>
     <p style="color:#767575; font-size:12px; margin-top:24px;">Or copy this link: <br><span style="color:#ba9eff; word-break:break-all;">${link}</span></p>

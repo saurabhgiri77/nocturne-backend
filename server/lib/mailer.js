@@ -1,10 +1,9 @@
 const nodemailer = require('nodemailer');
 
 // Provider-agnostic transporter. Reads SMTP_HOST / SMTP_PORT / SMTP_USER /
-// SMTP_PASS / EMAIL_FROM from env. Works with Gmail, Resend, Brevo, SES,
-// or any plain-SMTP server. Defaults below match Gmail SMTP (the easiest
-// free starter — needs an App Password generated at
-// https://myaccount.google.com/apppasswords).
+// SMTP_PASS / EMAIL_FROM from env. Works with Resend, Brevo, SES, Gmail
+// (locally only — Gmail SMTP times out from Render's egress IP range),
+// or any plain-SMTP server. Current default config is Resend on port 465.
 //
 // If SMTP_HOST is unset, sendMail() becomes a no-op + logs a warning so
 // dev environments (and tests) don't crash. Production should always

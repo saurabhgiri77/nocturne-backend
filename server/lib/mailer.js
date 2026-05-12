@@ -1,50 +1,56 @@
-const nodemailer = require('nodemailer');
+// Email sender. Prefers Resend's HTTP API when RESEND_API_KEY is set —
+// HTTPS:443 is universally reachable and bypasses the cloud-host outbound
+// SMTP blocks that bit us on Render (Gmail/Resend both timed out on 465).
+// Falls back to plain SMTP via nodemailer if Resend isn't configured, so
+// anyone who wants Gmail/Brevo/SES on a non-blocked network still can.
 
-// Provider-agnostic transporter. Reads SMTP_HOST / SMTP_PORT / SMTP_USER /
-// SMTP_PASS / EMAIL_FROM from env. Works with Resend, Brevo, SES, Gmail
-// (locally only — Gmail SMTP times out from Render's egress IP range),
-// or any plain-SMTP server. Current default config is Resend on port 465.
-//
-// If SMTP_HOST is unset, sendMail() becomes a no-op + logs a warning so
-// dev environments (and tests) don't crash. Production should always
-// have these set.
+const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+
+const FROM = process.env.EMAIL_FROM || 'Bump <onboarding@resend.dev>';
+
+// --- Resend HTTP path (preferred) ---
+
+let resendClient = null;
+const initResend = () => {
+  if (resendClient !== null) return resendClient;
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    resendClient = false; // sentinel: "tried, not configured"
+    return null;
+  }
+  resendClient = new Resend(key);
+  console.log('[mailer] Resend HTTP API ready');
+  return resendClient;
+};
+
+// --- SMTP fallback path ---
 
 let transporter = null;
-let configured = false;
-
-const init = () => {
-  if (configured) return transporter;
-  configured = true;
+let smtpConfigured = false;
+const initSmtp = () => {
+  if (smtpConfigured) return transporter;
+  smtpConfigured = true;
 
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT) || 587;
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
-  if (!host || !user || !pass) {
-    console.warn('[mailer] SMTP_HOST/USER/PASS not set — email sending disabled');
-    return null;
-  }
+  if (!host || !user || !pass) return null;
 
   transporter = nodemailer.createTransport({
     host,
     port,
-    secure: port === 465, // 465 = TLS, 587 = STARTTLS (most common for Gmail)
+    secure: port === 465,
     auth: { user, pass },
-    // Force IPv4. Render's outbound network is IPv4-only, but Node's DNS
-    // resolves smtp.gmail.com to an IPv6 address first by default — that
-    // connection fails immediately with ENETUNREACH. Locally either family
-    // works, so this is a safe global default.
+    // Force IPv4 — Render's outbound is IPv4-only, but Node's DNS prefers
+    // AAAA records by default → instant ENETUNREACH on the first attempt.
     family: 4,
-    // Pool keeps a few SMTP connections warm so we don't pay the TLS+AUTH
-    // handshake (~1–3s on Gmail) on every send. First send is still slow;
-    // subsequent ones drop to sub-second.
     pool: true,
     maxConnections: 3,
     maxMessages: 100,
   });
-  // Async, non-blocking. Surfaces credential / network issues at boot
-  // (well, first send) instead of waiting for a real signup to fail.
   transporter
     .verify()
     .then(() => console.log(`[mailer] SMTP ready (${host}:${port})`))
@@ -52,12 +58,24 @@ const init = () => {
   return transporter;
 };
 
-const FROM = process.env.EMAIL_FROM || 'Bump <noreply@bump.app>';
-
 const sendMail = async ({ to, subject, text, html }) => {
-  const t = init();
+  const r = initResend();
+  if (r) {
+    try {
+      const { data, error } = await r.emails.send({ from: FROM, to, subject, text, html });
+      if (error) throw new Error(error.message || JSON.stringify(error));
+      return { messageId: data?.id };
+    } catch (err) {
+      // Re-throw so callers' .catch() logs the failure. Don't fall back to
+      // SMTP here — Resend was explicitly configured, so an error is a real
+      // signal (bad API key, sandbox-recipient restriction, etc.).
+      throw err;
+    }
+  }
+
+  const t = initSmtp();
   if (!t) {
-    console.warn(`[mailer] would send to ${to} (${subject}) — but transporter not configured`);
+    console.warn(`[mailer] would send to ${to} (${subject}) — neither Resend nor SMTP configured`);
     return { skipped: true };
   }
   const info = await t.sendMail({ from: FROM, to, subject, text, html });

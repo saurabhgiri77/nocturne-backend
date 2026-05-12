@@ -81,4 +81,25 @@ This link expires in 24 hours. If you didn't sign up for Bump, ignore this email
   return sendMail({ to, subject, text, html });
 };
 
-module.exports = { sendMail, sendVerificationEmail };
+const sendPasswordResetEmail = async ({ to, link }) => {
+  const subject = 'Reset your Bump password';
+  const text = `Someone (hopefully you) asked to reset the password on your Bump account.
+
+Use this link to set a new password:
+${link}
+
+This link expires in 1 hour. If you didn't request this, ignore this email — your password stays the same.`;
+  const html = `<!doctype html>
+<html><body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0e0e0e; color:#fff; padding:32px;">
+  <div style="max-width:480px; margin:0 auto; background:#131313; border-radius:12px; padding:32px; text-align:center;">
+    <h1 style="font-size:22px; margin:0 0 8px;">Reset your password</h1>
+    <p style="color:#adaaaa; margin:0 0 24px;">Someone asked to reset the password on your Bump account. If that was you, set a new one below.</p>
+    <a href="${link}" style="display:inline-block; padding:12px 28px; border-radius:9999px; background:linear-gradient(135deg, #ba9eff, #8455ef); color:#000; font-weight:700; text-decoration:none;">Set new password</a>
+    <p style="color:#767575; font-size:12px; margin-top:24px;">Or copy this link: <br><span style="color:#ba9eff; word-break:break-all;">${link}</span></p>
+    <p style="color:#767575; font-size:11px; margin-top:32px;">This link expires in 1 hour. If you didn't request this, ignore this email — your password stays the same.</p>
+  </div>
+</body></html>`;
+  return sendMail({ to, subject, text, html });
+};
+
+module.exports = { sendMail, sendVerificationEmail, sendPasswordResetEmail };

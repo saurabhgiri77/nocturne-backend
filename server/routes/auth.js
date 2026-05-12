@@ -5,10 +5,17 @@ const User = require('../models/User');
 const Friendship = require('../models/Friendship');
 const Message = require('../models/Message');
 const EmailVerification = require('../models/EmailVerification');
-const { sendVerificationEmail } = require('../lib/mailer');
+const PasswordReset = require('../models/PasswordReset');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../lib/mailer');
 const { block: blockToken } = require('../lib/tokenBlocklist');
 const verifyToken = require('../middleware/verifyToken');
-const { loginLimiter, registerLimiter, googleLimiter } = require('../middleware/rateLimit');
+const {
+  loginLimiter,
+  registerLimiter,
+  googleLimiter,
+  forgotPasswordLimiter,
+  resetPasswordLimiter,
+} = require('../middleware/rateLimit');
 
 const signToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -548,6 +555,91 @@ router.post('/verify', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     return handle500(res, 'auth/verify', err);
+  }
+});
+
+// Password reset flow. Two routes:
+//   POST /forgot — takes an email, emails a reset link if the account exists.
+//                  Always returns 200 (anti-enumeration); only the email body
+//                  reveals whether the account exists.
+//   POST /reset  — takes a token + new password, updates the hash.
+//
+// Tokens are 64-hex-char random, single-use, expire in 1h. Old unused tokens
+// for the same user get flushed on every /forgot so a new request invalidates
+// any prior link. Tokens live in PasswordReset (Mongo TTL on expiresAt).
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+
+router.post('/forgot', forgotPasswordLimiter, async (req, res) => {
+  try {
+    const email = asString(req.body.email).toLowerCase().trim();
+    if (!email || !isEmailish(email)) {
+      return res.status(400).json({ message: 'Invalid email' });
+    }
+
+    // Find user but DON'T leak existence in the response. Spec: always 200.
+    const user = await User.findOne({ email });
+    if (user && user.passwordHash) {
+      // Google-only accounts (no passwordHash) can't reset — they sign in
+      // via Google. Silently skip the email; user still gets a 200.
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+      // Invalidate any prior unused tokens — only the freshest link works.
+      await PasswordReset.deleteMany({ user: user._id, used: false });
+      await PasswordReset.create({ user: user._id, token, expiresAt });
+
+      const base = frontendBase();
+      if (base) {
+        const link = `${base.replace(/\/$/, '')}/reset/${token}`;
+        // Fire-and-forget — HTTP response shouldn't block on SMTP latency.
+        sendPasswordResetEmail({ to: user.email, link }).catch((err) => {
+          console.error('[mailer] password-reset send failed:', err.message);
+        });
+      } else {
+        console.warn('[mailer] FRONTEND_URL not set — skipping reset email');
+      }
+    }
+
+    // Constant response regardless of whether the email matched a user.
+    res.json({ ok: true });
+  } catch (err) {
+    return handle500(res, 'auth/forgot', err);
+  }
+});
+
+router.post('/reset', resetPasswordLimiter, async (req, res) => {
+  try {
+    const token = asString(req.body.token);
+    const password = asString(req.body.password);
+
+    if (!token || token.length < 16) {
+      return res.status(400).json({ message: 'Invalid token' });
+    }
+    if (!password) return res.status(400).json({ message: 'Password required' });
+    if (password.length < 6) return res.status(400).json({ message: 'Min 6 chars' });
+    if (password.length > 200) return res.status(400).json({ message: 'Password too long' });
+
+    const record = await PasswordReset.findOne({ token, used: false });
+    if (!record) return res.status(400).json({ message: 'Invalid or already-used link' });
+    if (record.expiresAt < new Date()) {
+      return res.status(400).json({ message: 'Link expired — request a new one' });
+    }
+    const user = await User.findById(record.user);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Setting passwordHash to a plaintext string triggers the pre('save')
+    // hook on User, which bcrypts it before persisting.
+    user.passwordHash = password;
+    // Marks any JWT issued before now as invalid — see verifyToken middleware
+    // and socket auth. Crucial when reset is used because the account was
+    // compromised: forces every other session to re-authenticate.
+    user.passwordChangedAt = new Date();
+    await user.save();
+    record.used = true;
+    await record.save();
+
+    res.json({ ok: true });
+  } catch (err) {
+    return handle500(res, 'auth/reset', err);
   }
 });
 

@@ -51,6 +51,13 @@ const userSchema = new mongoose.Schema(
     // nothing is blocked.
     emailVerified: { type: Boolean, default: false },
     emailVerifiedAt: { type: Date },
+
+    // Set whenever the password is changed (currently only via /reset).
+    // verifyToken + socket auth reject JWTs whose `iat` is older than this
+    // timestamp, so a password reset invalidates every existing session
+    // for the user — important when reset is triggered because the account
+    // was compromised.
+    passwordChangedAt: { type: Date },
   },
   { timestamps: true }
 );

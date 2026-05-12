@@ -43,9 +43,18 @@ const initSocket = (io) => {
     }
 
     try {
-      const user = await User.findById(socket.user.id).select('suspendedUntil');
+      const user = await User.findById(socket.user.id).select('suspendedUntil passwordChangedAt');
       if (user?.suspendedUntil && user.suspendedUntil > new Date()) {
         return next(new Error('Authentication error: account suspended'));
+      }
+      // Reject sockets opened with a JWT issued before the user's last
+      // password change. Matches the HTTP middleware so a /reset evicts
+      // every active socket too.
+      if (
+        user?.passwordChangedAt &&
+        socket.user.iat * 1000 < user.passwordChangedAt.getTime()
+      ) {
+        return next(new Error('Authentication error: session expired'));
       }
     } catch (err) {
       // DB error — fail closed: refuse the connection rather than letting a

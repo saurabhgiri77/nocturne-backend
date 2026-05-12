@@ -48,9 +48,31 @@ const reportLimiter = rateLimit({
   message: { message: 'Too many reports filed — wait a bit before more.' },
 });
 
+// Forgot-password: 5 / hour / IP. Tighter than register because the route
+// triggers an email and we don't want a single client spamming inboxes or
+// using us to enumerate registered emails.
+const forgotPasswordLimiter = rateLimit({
+  ...baseConfig,
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: { message: 'Too many password-reset requests — try again later.' },
+});
+
+// Reset-password: 10 / hour / IP. Tighter cap on token submission so a
+// brute-forcer can't blast our 64-hex-char token space (still astronomical,
+// but defense in depth).
+const resetPasswordLimiter = rateLimit({
+  ...baseConfig,
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { message: 'Too many reset attempts — wait a bit and try again.' },
+});
+
 module.exports = {
   loginLimiter,
   registerLimiter,
   googleLimiter,
   reportLimiter,
+  forgotPasswordLimiter,
+  resetPasswordLimiter,
 };

@@ -87,11 +87,12 @@ const issueAndSendVerification = async (user) => {
     return;
   }
   const link = `${base.replace(/\/$/, '')}/verify/${token}`;
-  try {
-    await sendVerificationEmail({ to: user.email, link });
-  } catch (err) {
+  // Fire-and-forget. The HTTP response shouldn't block on Gmail's SMTP
+  // handshake — the token is already in the DB, so the user can retry
+  // via /verify/send if delivery fails. Errors still get logged.
+  sendVerificationEmail({ to: user.email, link }).catch((err) => {
     console.error('[mailer] verification send failed:', err.message);
-  }
+  });
 };
 
 // Best-effort IP → country lookup using ip-api.com (free, no auth, 45 req/min).

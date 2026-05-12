@@ -32,6 +32,12 @@ const init = () => {
     port,
     secure: port === 465, // 465 = TLS, 587 = STARTTLS (most common for Gmail)
     auth: { user, pass },
+    // Pool keeps a few SMTP connections warm so we don't pay the TLS+AUTH
+    // handshake (~1–3s on Gmail) on every send. First send is still slow;
+    // subsequent ones drop to sub-second.
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
   });
   // Async, non-blocking. Surfaces credential / network issues at boot
   // (well, first send) instead of waiting for a real signup to fail.

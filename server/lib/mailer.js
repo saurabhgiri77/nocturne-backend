@@ -32,6 +32,11 @@ const init = () => {
     port,
     secure: port === 465, // 465 = TLS, 587 = STARTTLS (most common for Gmail)
     auth: { user, pass },
+    // Force IPv4. Render's outbound network is IPv4-only, but Node's DNS
+    // resolves smtp.gmail.com to an IPv6 address first by default — that
+    // connection fails immediately with ENETUNREACH. Locally either family
+    // works, so this is a safe global default.
+    family: 4,
     // Pool keeps a few SMTP connections warm so we don't pay the TLS+AUTH
     // handshake (~1–3s on Gmail) on every send. First send is still slow;
     // subsequent ones drop to sub-second.

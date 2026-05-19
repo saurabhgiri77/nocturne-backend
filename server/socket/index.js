@@ -1,11 +1,38 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Friendship = require('../models/Friendship');
 const { handleMatchmaking } = require('./matchmaking');
 const { handleSignaling } = require('./signaling');
 const { handleMessages } = require('./messages');
 
 // userId → Set<socketId>. A user with multiple tabs counts once.
 const userSockets = new Map();
+
+// True iff the user has at least one active socket. Exported so REST
+// routes (e.g. GET /api/friends) can decorate responses with presence.
+const isUserOnline = (userId) => {
+  const set = userSockets.get(String(userId));
+  return !!set && set.size > 0;
+};
+
+// Look up this user's accepted friends and notify each one. Used on the
+// first socket connect / last disconnect so each friend's sidebar can
+// flip the status dot without polling.
+const notifyFriendsOfPresence = async (io, userId, event) => {
+  try {
+    const rows = await Friendship.find({
+      status: 'accepted',
+      $or: [{ requester: userId }, { recipient: userId }],
+    }).select('requester recipient').lean();
+    const me = String(userId);
+    for (const f of rows) {
+      const other = String(f.requester) === me ? String(f.recipient) : String(f.requester);
+      io.to(`user:${other}`).emit(event, { userId: me });
+    }
+  } catch (err) {
+    console.error('[presence] notifyFriends failed:', err);
+  }
+};
 
 // Throttle broadcasts: at most one `online_count` emit per second. If a
 // burst of (dis)connects happens we coalesce into a single trailing emit.
@@ -87,7 +114,11 @@ const initSocket = (io) => {
     // Send current count to the new socket immediately so the UI doesn't
     // wait for the next throttled broadcast.
     socket.emit('online_count', { count: userSockets.size });
-    if (wasOffline) broadcastOnlineCount(io);
+    if (wasOffline) {
+      broadcastOnlineCount(io);
+      // Tell this user's friends they're online now. Fire-and-forget.
+      notifyFriendsOfPresence(io, uid, 'friend_online');
+    }
 
     handleMatchmaking(io, socket);
     handleSignaling(io, socket);
@@ -101,10 +132,11 @@ const initSocket = (io) => {
         if (set.size === 0) {
           userSockets.delete(uid);
           broadcastOnlineCount(io);
+          notifyFriendsOfPresence(io, uid, 'friend_offline');
         }
       }
     });
   });
 };
 
-module.exports = { initSocket };
+module.exports = { initSocket, isUserOnline };

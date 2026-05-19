@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Friendship = require('../models/Friendship');
 const User = require('../models/User');
 const verifyToken = require('../middleware/verifyToken');
+const { isUserOnline } = require('../socket');
 
 const PROFILE_FIELDS = 'username displayName';
 
@@ -46,9 +47,14 @@ router.get('/', verifyToken, async (req, res) => {
     const pendingSent = [];
     for (const f of all) {
       const shaped = serializeFriendship(f, me);
-      if (f.status === 'accepted') friends.push(shaped);
-      else if (shaped.direction === 'received') pendingReceived.push(shaped);
-      else pendingSent.push(shaped);
+      if (f.status === 'accepted') {
+        shaped.user.online = isUserOnline(shaped.user.id);
+        friends.push(shaped);
+      } else if (shaped.direction === 'received') {
+        pendingReceived.push(shaped);
+      } else {
+        pendingSent.push(shaped);
+      }
     }
     res.json({ friends, pendingReceived, pendingSent });
   } catch (err) {

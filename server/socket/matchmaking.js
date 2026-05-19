@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const CallLog = require('../models/CallLog');
 const User = require('../models/User');
+const Friendship = require('../models/Friendship');
 const { checkSocketLimit } = require('./rateLimit');
 
 // Truncate a user ID for logging — first 6 hex chars is enough to debug a
@@ -74,7 +75,7 @@ const findCompatibleFor = (entry) => {
 
 // Pair two queue entries: build a room, wire up roomIds, emit match_found
 // to both sides. `a` is the initiator (creates the offer).
-const pairUsers = (a, b) => {
+const pairUsers = async (a, b) => {
   const roomId = `room_${crypto.randomBytes(16).toString('hex')}`;
   const room = {
     userA: a.socket.id,
@@ -87,12 +88,31 @@ const pairUsers = (a, b) => {
   a.socket.roomId = roomId;
   b.socket.roomId = roomId;
 
+  // Surface existing friendship to the client so the in-call "Add Friend"
+  // button reflects the existing relationship instead of inviting a
+  // duplicate request. Single fast indexed lookup; failure is non-fatal —
+  // we fall back to isFriend=false rather than blocking the match emit.
+  let isFriend = false;
+  try {
+    const friendship = await Friendship.findOne({
+      status: 'accepted',
+      $or: [
+        { requester: a.userId, recipient: b.userId },
+        { requester: b.userId, recipient: a.userId },
+      ],
+    }).select('_id').lean();
+    isFriend = !!friendship;
+  } catch (err) {
+    console.error('[match] friendship lookup failed:', err);
+  }
+
   const payloadFor = (peerEntry) => ({
     peerUserId: peerEntry.userId,
     peerUsername: peerEntry.profile.username,
     peerDisplayName: peerEntry.profile.displayName,
     peerCountry: peerEntry.profile.country,
     peerInterests: peerEntry.profile.interests,
+    isFriend,
   });
 
   a.socket.emit('match_found', { roomId, role: 'initiator', ...payloadFor(b) });
@@ -128,7 +148,7 @@ const attemptMatchFor = (socketId) => {
     const [otherId, other] = match;
     dequeue(socketId);
     dequeue(otherId);
-    pairUsers(entry, other);
+    pairUsers(entry, other).catch((err) => console.error('[match] pairUsers failed:', err));
     return;
   }
   // Still no match. Try again after another full window. Stops naturally
@@ -154,7 +174,7 @@ const handleMatchmaking = (io, socket) => {
     if (match) {
       const [otherSocketId, other] = match;
       dequeue(otherSocketId);
-      pairUsers(newcomer, other);
+      pairUsers(newcomer, other).catch((err) => console.error('[match] pairUsers failed:', err));
       return;
     }
 

@@ -3,6 +3,13 @@ const bcrypt = require('bcryptjs');
 
 const USERNAME_REGEX = /^[a-z0-9_.]{3,20}$/;
 
+// Unverified accounts may use Bump freely for this long after sign-up, then
+// email verification becomes mandatory. A `verificationDeadline` is stamped
+// at registration (now + this); once it passes, isVerificationRequired()
+// returns true and the socket grace timer + requireVerified middleware gate
+// the core experience.
+const VERIFICATION_GRACE_MS = 30 * 60 * 1000; // 30 minutes
+
 const userSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -47,10 +54,16 @@ const userSchema = new mongoose.Schema(
 
     // Email verification status. Email signups start false (must click
     // the link). Google sign-ins start true (Google already verified the
-    // address). Used as a soft signal — banner nags unverified users but
-    // nothing is blocked.
+    // address). Unverified users may use Bump until verificationDeadline,
+    // after which isVerificationRequired() gates the core experience.
     emailVerified: { type: Boolean, default: false },
     emailVerifiedAt: { type: Date },
+
+    // Hard deadline by which an email signup must verify. Stamped at
+    // registration to (createdAt + VERIFICATION_GRACE_MS). Null for Google
+    // accounts (already verified) and any account created before this field
+    // existed — a null deadline never triggers the gate.
+    verificationDeadline: { type: Date },
 
     // Set whenever the password is changed (currently only via /reset).
     // verifyToken + socket auth reject JWTs whose `iat` is older than this
@@ -76,5 +89,16 @@ userSchema.methods.isSuspended = function () {
   return !!this.suspendedUntil && this.suspendedUntil > new Date();
 };
 
+// True once an unverified email account is past its grace deadline. A missing
+// deadline (Google accounts, legacy rows) or a verified email both return false.
+userSchema.methods.isVerificationRequired = function () {
+  return (
+    !this.emailVerified &&
+    !!this.verificationDeadline &&
+    this.verificationDeadline <= new Date()
+  );
+};
+
 module.exports = mongoose.model('User', userSchema);
 module.exports.USERNAME_REGEX = USERNAME_REGEX;
+module.exports.VERIFICATION_GRACE_MS = VERIFICATION_GRACE_MS;

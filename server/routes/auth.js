@@ -33,6 +33,13 @@ const serializeUser = (user, extras = {}) => ({
   languages: Array.isArray(user.languages) ? user.languages : [],
   interests: Array.isArray(user.interests) ? user.interests : [],
   emailVerified: !!user.emailVerified,
+  // Frontend uses these to nag before the deadline (show countdown) and to
+  // switch to a hard "verify to continue" screen once it passes.
+  verificationDeadline: user.verificationDeadline || null,
+  emailVerificationRequired:
+    typeof user.isVerificationRequired === 'function'
+      ? user.isVerificationRequired()
+      : false,
   // Only included if currently suspended in the future. Frontend reads this
   // to show the "suspended until X" banner.
   suspendedUntil:
@@ -238,7 +245,10 @@ router.post('/register', registerLimiter, async (req, res) => {
       username: usernameRaw,
       dateOfBirth: dob,
       country: country || undefined,
-      // emailVerified defaults to false — verification email follows.
+      // emailVerified defaults to false — verification email follows. The
+      // user can use Bump until this deadline, then must verify (gated by
+      // socket auth + requireVerified). Google signups skip this (verified).
+      verificationDeadline: new Date(Date.now() + User.VERIFICATION_GRACE_MS),
     });
     await user.save();
 

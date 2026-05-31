@@ -8,6 +8,45 @@ const { handleMessages } = require('./messages');
 // userId → Set<socketId>. A user with multiple tabs counts once.
 const userSockets = new Map();
 
+// userId → Timeout. Enforces the email-verification deadline mid-session:
+// a user who connects shortly before their deadline would otherwise stay on
+// indefinitely. One timer per user, armed on their first socket.
+const graceTimers = new Map();
+
+const clearGraceTimer = (uid) => {
+  const t = graceTimers.get(uid);
+  if (t) {
+    clearTimeout(t);
+    graceTimers.delete(uid);
+  }
+};
+
+// When an unverified user's deadline passes, notify them and drop every
+// socket they hold. Re-checks the DB first so verifying in another tab (which
+// flips emailVerified) cancels the kick instead of booting a now-valid user.
+const scheduleGraceKick = (io, uid, deadline) => {
+  clearGraceTimer(uid);
+  const remaining = new Date(deadline).getTime() - Date.now();
+  const fire = async () => {
+    graceTimers.delete(uid);
+    try {
+      const u = await User.findById(uid).select('emailVerified');
+      if (!u || u.emailVerified) return; // verified meanwhile — let them stay
+    } catch (err) {
+      console.error('[verify-grace] kick lookup failed:', err.message);
+      return;
+    }
+    io.to(`user:${uid}`).emit('verification_required', {
+      message: 'Verify your email to keep using Bump.',
+    });
+    const set = userSockets.get(uid);
+    if (set) {
+      for (const sid of [...set]) io.sockets.sockets.get(sid)?.disconnect(true);
+    }
+  };
+  graceTimers.set(uid, setTimeout(fire, Math.max(0, remaining)));
+};
+
 // True iff the user has at least one active socket. Exported so REST
 // routes (e.g. GET /api/friends) can decorate responses with presence.
 const isUserOnline = (userId) => {
@@ -70,7 +109,9 @@ const initSocket = (io) => {
     }
 
     try {
-      const user = await User.findById(socket.user.id).select('suspendedUntil passwordChangedAt');
+      const user = await User.findById(socket.user.id).select(
+        'suspendedUntil passwordChangedAt emailVerified verificationDeadline'
+      );
       if (user?.suspendedUntil && user.suspendedUntil > new Date()) {
         return next(new Error('Authentication error: account suspended'));
       }
@@ -83,6 +124,15 @@ const initSocket = (io) => {
       ) {
         return next(new Error('Authentication error: session expired'));
       }
+      // Email-verification gate: an unverified user past their grace deadline
+      // can't open a socket at all (matchmaking, DMs, and presence all ride
+      // it). The frontend maps this message to the "verify your email" screen.
+      if (user && user.isVerificationRequired()) {
+        return next(new Error('Authentication error: email not verified'));
+      }
+      // Stash for the connection handler's mid-session grace timer.
+      socket.user.emailVerified = !!user?.emailVerified;
+      socket.user.verificationDeadline = user?.verificationDeadline || null;
     } catch (err) {
       // DB error — fail closed: refuse the connection rather than letting a
       // potentially-suspended user slip through.
@@ -120,6 +170,17 @@ const initSocket = (io) => {
       notifyFriendsOfPresence(io, uid, 'friend_online');
     }
 
+    // Arm the verification-deadline kick for unverified users (once per user,
+    // on their first socket). Past-deadline users never reach here — the auth
+    // middleware already rejected them — so `deadline` is always in the future.
+    if (
+      !socket.user.emailVerified &&
+      socket.user.verificationDeadline &&
+      !graceTimers.has(uid)
+    ) {
+      scheduleGraceKick(io, uid, socket.user.verificationDeadline);
+    }
+
     handleMatchmaking(io, socket);
     handleSignaling(io, socket);
     handleMessages(io, socket);
@@ -131,6 +192,7 @@ const initSocket = (io) => {
         set.delete(socket.id);
         if (set.size === 0) {
           userSockets.delete(uid);
+          clearGraceTimer(uid);
           broadcastOnlineCount(io);
           notifyFriendsOfPresence(io, uid, 'friend_offline');
         }

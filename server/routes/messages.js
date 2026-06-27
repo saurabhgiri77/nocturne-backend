@@ -2,6 +2,7 @@ const router = require('express').Router();
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const verifyToken = require('../middleware/verifyToken');
+const requireRegistered = require('../middleware/requireRegistered');
 
 const HISTORY_LIMIT = 50;
 
@@ -10,7 +11,7 @@ const oid = (s) => new mongoose.Types.ObjectId(s);
 
 // GET /api/messages — conversation list (one row per peer). Returns latest
 // message per peer + unread count + minimal peer profile, newest first.
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, requireRegistered, async (req, res) => {
   try {
     const meId = oid(req.user.id);
     const conversations = await Message.aggregate([
@@ -66,7 +67,7 @@ router.get('/', verifyToken, async (req, res) => {
 // GET /api/messages/:userId — last 50 messages between me and `:userId`,
 // ordered oldest → newest (frontend renders top-to-bottom and scrolls to
 // bottom).
-router.get('/:userId', verifyToken, async (req, res) => {
+router.get('/:userId', verifyToken, requireRegistered, async (req, res) => {
   try {
     const me = req.user.id;
     const peer = req.params.userId;
@@ -101,7 +102,7 @@ router.get('/:userId', verifyToken, async (req, res) => {
 
 // PATCH /api/messages/:userId/read — mark all messages from `:userId` to me
 // as read. Idempotent (only updates the unread ones).
-router.patch('/:userId/read', verifyToken, async (req, res) => {
+router.patch('/:userId/read', verifyToken, requireRegistered, async (req, res) => {
   try {
     const me = req.user.id;
     const peer = req.params.userId;

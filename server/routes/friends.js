@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Friendship = require('../models/Friendship');
 const User = require('../models/User');
 const verifyToken = require('../middleware/verifyToken');
+const requireRegistered = require('../middleware/requireRegistered');
 const requireVerified = require('../middleware/requireVerified');
 const { isUserOnline } = require('../socket');
 
@@ -32,7 +33,7 @@ const serializeFriendship = (friendship, me) => {
 
 // GET /api/friends → buckets the current user's friendships into three
 // lists for the /friends page UI.
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, requireRegistered, async (req, res) => {
   try {
     const me = req.user.id;
     const all = await Friendship.find({
@@ -67,7 +68,7 @@ router.get('/', verifyToken, async (req, res) => {
 // POST /api/friends/:userId/request — send (or auto-accept on mutual) a
 // friend request. Idempotent: re-tapping while a row already exists just
 // returns the current state.
-router.post('/:userId/request', verifyToken, requireVerified, async (req, res) => {
+router.post('/:userId/request', verifyToken, requireRegistered, requireVerified, async (req, res) => {
   try {
     const me = req.user.id;
     const target = req.params.userId;
@@ -123,7 +124,7 @@ router.post('/:userId/request', verifyToken, requireVerified, async (req, res) =
 
 // POST /api/friends/:userId/accept — accept a pending request from `:userId`
 // (i.e. a row where requester=:userId and recipient=me, status=pending).
-router.post('/:userId/accept', verifyToken, requireVerified, async (req, res) => {
+router.post('/:userId/accept', verifyToken, requireRegistered, requireVerified, async (req, res) => {
   try {
     const me = req.user.id;
     const target = req.params.userId;
@@ -153,7 +154,7 @@ router.post('/:userId/accept', verifyToken, requireVerified, async (req, res) =>
 // DELETE /api/friends/:userId — removes any friendship row between me and
 // `:userId`, regardless of status (accepted=remove friend; pending received
 // =decline; pending sent=cancel). Idempotent.
-router.delete('/:userId', verifyToken, async (req, res) => {
+router.delete('/:userId', verifyToken, requireRegistered, async (req, res) => {
   try {
     const me = req.user.id;
     const target = req.params.userId;

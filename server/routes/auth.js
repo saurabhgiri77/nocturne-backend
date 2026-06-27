@@ -6,6 +6,7 @@ const Friendship = require('../models/Friendship');
 const Message = require('../models/Message');
 const EmailVerification = require('../models/EmailVerification');
 const PasswordReset = require('../models/PasswordReset');
+const BannedGuest = require('../models/BannedGuest');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../lib/mailer');
 const { block: blockToken } = require('../lib/tokenBlocklist');
 const verifyToken = require('../middleware/verifyToken');
@@ -19,6 +20,18 @@ const {
 
 const signToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+// Guest tokens carry the device signals + age attestation. Short-lived so
+// abandoned sessions don't pile up cap counters on the server; can be
+// re-issued by the same fingerprint with no friction (unless they're banned).
+const GUEST_SESSION_MS = 15 * 60 * 1000; // 15 minutes
+const GUEST_MAX_MATCHES_PER_SESSION = 3;
+const signGuestToken = (claims) =>
+  jwt.sign(
+    { guest: true, ...claims },
+    process.env.JWT_SECRET,
+    { expiresIn: Math.floor(GUEST_SESSION_MS / 1000) }
+  );
 
 // Public-shape serialization. Centralized so /register, /login, /google,
 // /me, and PATCH /me always return the same fields.
@@ -650,6 +663,75 @@ router.post('/reset', resetPasswordLimiter, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     return handle500(res, 'auth/reset', err);
+  }
+});
+
+// POST /api/auth/guest — issue an anonymous JWT for landing-page visitors who
+// want to try the app without signing up. Accepts a DOB attestation (must be
+// ≥ MIN_AGE_YEARS) plus the device fingerprint + uuid produced by
+// utils/fingerprint.js on the client. Checks the BannedGuest collection
+// using the two-of-three signal rule (fpHash / uuid / ip).
+//
+// The returned token is short-lived (GUEST_SESSION_MS) and carries the
+// fingerprint so downstream code (matchmaking caps, report → ban path)
+// always knows which device this is.
+router.post('/guest', async (req, res) => {
+  try {
+    const fpHash = asString(req.body.fpHash).slice(0, 64);
+    const uuid   = asString(req.body.uuid).slice(0, 64);
+    const dobStr = asString(req.body.dateOfBirth);
+    const ip = req.ip || '';
+
+    if (!fpHash || !uuid) {
+      return res.status(400).json({ message: 'Device fingerprint missing.' });
+    }
+    if (!dobStr) {
+      return res.status(400).json({ message: 'Please enter your date of birth.' });
+    }
+    const dob = new Date(dobStr);
+    if (Number.isNaN(dob.getTime())) {
+      return res.status(400).json({ message: 'Invalid date of birth.' });
+    }
+    const age = ageInYears(dob);
+    if (age < MIN_AGE_YEARS) {
+      return res.status(400).json({ message: `You must be at least ${MIN_AGE_YEARS} to use Bump.` });
+    }
+    if (age > 120) {
+      return res.status(400).json({ message: 'Invalid date of birth.' });
+    }
+
+    // Banned? two-of-three signal match returns the offending row.
+    const banned = await BannedGuest.matchesAny(fpHash, uuid, ip).catch(() => null);
+    if (banned) {
+      return res.status(403).json({ message: 'Guest access is not available from this device.' });
+    }
+
+    // gid is a fresh per-session id used as socket.user.id and report target.
+    const gid = `guest_${crypto.randomBytes(12).toString('hex')}`;
+    const token = signGuestToken({
+      id: gid,
+      gid,
+      fp: fpHash,
+      uuid,
+      adult: true,
+      dobYear: dob.getFullYear(),
+    });
+
+    res.json({
+      token,
+      sessionMs: GUEST_SESSION_MS,
+      maxMatches: GUEST_MAX_MATCHES_PER_SESSION,
+      guest: {
+        id: gid,
+        guest: true,
+        username: null,
+        displayName: null,
+        email: null,
+        emailVerified: false,
+      },
+    });
+  } catch (err) {
+    return handle500(res, 'auth/guest', err);
   }
 });
 

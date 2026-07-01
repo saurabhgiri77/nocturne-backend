@@ -18,8 +18,35 @@ const {
   resetPasswordLimiter,
 } = require('../middleware/rateLimit');
 
-const signToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+const signToken = (id, sid) =>
+  jwt.sign({ id, sid }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+// Rotate the user's active session id so any existing JWT is invalidated,
+// then push a `session_replaced` socket event to the previous device so it
+// logs out immediately instead of waiting for its next HTTP call to 401.
+// Returns a token bound to the new session. Callers should await this
+// before responding so the DB write + kick complete before the client
+// receives its new token.
+const issueSession = async (user, req) => {
+  const sid = crypto.randomUUID();
+  const io = req.app.get('io');
+  if (io) {
+    try {
+      const oldSockets = await io.in(`user:${user._id}`).fetchSockets();
+      for (const s of oldSockets) {
+        s.emit('session_replaced', { reason: 'signed_in_elsewhere' });
+        // Give the client a beat to receive the event before yanking the
+        // connection — otherwise the frontend logout listener can miss it.
+        setTimeout(() => { try { s.disconnect(true); } catch { /* already gone */ } }, 250);
+      }
+    } catch (err) {
+      console.warn('[auth/issueSession] socket kick failed:', err.message);
+    }
+  }
+  user.activeSessionId = sid;
+  await user.save();
+  return signToken(user._id, sid);
+};
 
 // Guest tokens carry the device signals + age attestation. Short-lived so
 // abandoned sessions don't pile up cap counters on the server; can be
@@ -272,7 +299,7 @@ router.post('/register', registerLimiter, async (req, res) => {
     );
 
     res.status(201).json({
-      token: signToken(user._id),
+      token: await issueSession(user, req),
       user: serializeUser(user, await fetchUserCounts(user._id)),
     });
   } catch (err) {
@@ -304,7 +331,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     if (user.isSuspended()) return respondSuspended(res, user);
 
     res.status(200).json({
-      token: signToken(user._id),
+      token: await issueSession(user, req),
       user: serializeUser(user, await fetchUserCounts(user._id)),
     });
   } catch (err) {
@@ -383,7 +410,7 @@ router.post('/google', googleLimiter, async (req, res) => {
     if (user.isSuspended()) return respondSuspended(res, user);
 
     res.status(200).json({
-      token: signToken(user._id),
+      token: await issueSession(user, req),
       user: serializeUser(user, await fetchUserCounts(user._id)),
     });
   } catch (err) {

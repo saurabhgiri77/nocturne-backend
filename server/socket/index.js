@@ -127,7 +127,7 @@ const initSocket = (io) => {
 
     try {
       const user = await User.findById(socket.user.id).select(
-        'suspendedUntil passwordChangedAt emailVerified verificationDeadline'
+        'suspendedUntil passwordChangedAt activeSessionId emailVerified verificationDeadline'
       );
       if (user?.suspendedUntil && user.suspendedUntil > new Date()) {
         return next(new Error('Authentication error: account suspended'));
@@ -140,6 +140,13 @@ const initSocket = (io) => {
         socket.user.iat * 1000 < user.passwordChangedAt.getTime()
       ) {
         return next(new Error('Authentication error: session expired'));
+      }
+      // Single-device policy: reject sockets whose sid doesn't match the
+      // user's currently-active session. Auth route rotates sid on every
+      // new login, and its inline socket kick handles the case where a
+      // reconnection race lets the old socket sneak in before the kick.
+      if (user?.activeSessionId && socket.user.sid !== user.activeSessionId) {
+        return next(new Error('Authentication error: session_replaced'));
       }
       // Email-verification gate: an unverified user past their grace deadline
       // can't open a socket at all (matchmaking, DMs, and presence all ride

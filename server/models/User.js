@@ -71,6 +71,16 @@ const userSchema = new mongoose.Schema(
     // for the user — important when reset is triggered because the account
     // was compromised.
     passwordChangedAt: { type: Date },
+
+    // Single-device login: every fresh login/register/google-sign-in
+    // rotates this value and embeds it in the JWT as `sid`. verifyToken +
+    // socket auth reject any token whose `sid` doesn't match the current
+    // value, so signing in on device B automatically invalidates the
+    // token still cached on device A. Null on legacy accounts that
+    // haven't logged in since the feature shipped — the middleware
+    // treats "no active sid yet" as backward-compat and lets those
+    // tokens keep working until their next login.
+    activeSessionId: { type: String, default: null },
   },
   { timestamps: true }
 );

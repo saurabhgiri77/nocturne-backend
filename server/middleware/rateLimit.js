@@ -68,7 +68,18 @@ const resetPasswordLimiter = rateLimit({
   message: { message: 'Too many reset attempts — wait a bit and try again.' },
 });
 
+// Public stats: 60 / minute / IP. Deliberately generous — the landing page
+// polls every 30s and a whole office or mobile carrier behind one NAT shares
+// an IP, so a tight cap would 429 real visitors. The handler is a Map size
+// lookup, so this is abuse hygiene, not load protection.
+const statsLimiter = rateLimit({
+  ...baseConfig,
+  windowMs: 60 * 1000,
+  max: 60,
+});
+
 module.exports = {
+  statsLimiter,
   loginLimiter,
   registerLimiter,
   googleLimiter,

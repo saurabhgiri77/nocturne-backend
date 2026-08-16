@@ -179,9 +179,9 @@ const initSocket = (io) => {
     const uid = String(socket.user.id);
 
     if (!isGuest) {
-      // Online-count + friend-presence are registered-user concepts.
-      // Guests don't appear in either pool, don't bump the count, and
-      // can't have friends notified of presence changes.
+      // Friend-presence is a registered-user concept — guests have no
+      // friends to notify. (They DO count toward the headcount; that
+      // happens in the else branch below.)
       let sockets = userSockets.get(uid);
       if (!sockets) {
         sockets = new Set();
@@ -242,4 +242,6 @@ const initSocket = (io) => {
   });
 };
 
-module.exports = { initSocket, isUserOnline };
+// totalOnline is exported for the public GET /api/stats/online route — the
+// landing page has no token, so it can't get this over the socket.
+module.exports = { initSocket, isUserOnline, totalOnline };

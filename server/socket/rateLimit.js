@@ -56,6 +56,15 @@ const eventLimits = {
   ice_candidate:   { windowMs: 1_000,  max: 50 },  // legitimate trickle ICE bursts
   join_queue:      { windowMs: 60_000, max: 30 },  // 30 skips/queue-joins per minute
   leave_queue:     { windowMs: 60_000, max: 30 },
+
+  // Mini games. NOTE the default at the top of createSocketLimiter is
+  // UNLIMITED (`if (!conf) return true`), so any new game_* event that isn't
+  // listed here is an unthrottled abuse vector.
+  game_invite:          { windowMs: 60_000, max: 6 },   // semantic cooldown sits on top of this
+  game_invite_response: { windowMs: 60_000, max: 12 },
+  game_move:            { windowMs: 10_000, max: 30 },  // fastest legit Connect 4 play is ~1/s
+  game_quit:            { windowMs: 60_000, max: 10 },
+  game_rematch:         { windowMs: 60_000, max: 10 },
 };
 
 const checkSocketLimit = createSocketLimiter(eventLimits);

@@ -5,7 +5,9 @@
   "scripts": {
     "start": "NODE_ENV=production node server/index.js",
     "dev": "NODE_ENV=development nodemon server/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node server/games/__check.js && node server/socket/__check.js",
+    "test:games": "node server/games/__check.js",
+    "test:socket": "node server/socket/__check.js"
   },
   "keywords": [],
   "author": "",

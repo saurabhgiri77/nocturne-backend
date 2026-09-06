@@ -1,31 +1,8 @@
 const { activeRooms, saveCallLog } = require('./matchmaking');
 const { checkSocketLimit } = require('./rateLimit');
+const { getPeer, memberRoom } = require('./roomUtils');
 
 const MAX_CHAT_LENGTH = 1000;
-
-// Two membership tests:
-//  - isMember: socket is in the room (sender allowed)
-//  - getPeer: returns the OTHER socket in the room (receiver)
-// We must verify isMember on every incoming event — otherwise any
-// authenticated socket that knows a roomId can inject SDP/ICE/chat into
-// any call, MITM the WebRTC handshake, or end a call they aren't in.
-const isMember = (room, mySocketId) =>
-  room.userA === mySocketId || room.userB === mySocketId;
-
-const getPeer = (io, room, mySocketId) => {
-  const peerSocketId = room.userA === mySocketId ? room.userB : room.userA;
-  return io.sockets.sockets.get(peerSocketId);
-};
-
-// Look up the room and verify the sender is a member. Returns null on
-// either failure so handlers can early-return cleanly.
-const memberRoom = (roomId, mySocketId) => {
-  if (typeof roomId !== 'string') return null;
-  const room = activeRooms.get(roomId);
-  if (!room) return null;
-  if (!isMember(room, mySocketId)) return null;
-  return room;
-};
 
 const handleSignaling = (io, socket) => {
   // Initiator → Server → Receiver

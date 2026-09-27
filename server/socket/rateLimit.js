@@ -65,8 +65,13 @@ const eventLimits = {
   game_move:            { windowMs: 10_000, max: 30 },  // fastest legit Connect 4 play is ~1/s
   game_quit:            { windowMs: 60_000, max: 10 },
   game_rematch:         { windowMs: 60_000, max: 10 },
+
+  // Camera reactions. The client already enforces a 3s global cooldown, so a
+  // legit user tops out near 3-4 per 10s; this only bites a modified client.
+  reaction:             { windowMs: 10_000, max: 5 },
 };
 
 const checkSocketLimit = createSocketLimiter(eventLimits);
 
-module.exports = { checkSocketLimit, createSocketLimiter };
+// eventLimits is exported so __check.js can assert every handler has an entry.
+module.exports = { checkSocketLimit, createSocketLimiter, eventLimits };

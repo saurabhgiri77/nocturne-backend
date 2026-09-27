@@ -7,6 +7,8 @@
 const assert = require('node:assert/strict');
 const { activeRooms } = require('./matchmaking');
 const { handleGames } = require('./games');
+const { handleReactions } = require('./reactions');
+const { eventLimits } = require('./rateLimit');
 
 let passed = 0;
 const test = (name, fn) => {
@@ -305,6 +307,144 @@ test('relay: game state dies with the room (no second map to leak)', () => {
   ctx.a.fire('game_move', { roomId: ctx.roomId, sessionId: 'x', seq: 0, move: { col: 0 } }, ack);
   assert.deepEqual(box.r, { ok: false, error: 'not_member' });
   teardown();
+});
+
+// ── camera reactions ─────────────────────────────────────────────────────
+const GIF = { id: 'g1', url: 'https://media1.giphy.com/media/g1/200w.webp', stillUrl: null, width: 200, height: 150 };
+
+// setup() also wires the game handlers onto a and b; they don't interact.
+// Every call gets fresh socket ids, which matters here: reactions allow only
+// 5 per 10s per socket and the limiter frees a bucket only on 'disconnect'.
+const reactionSetup = (pick = () => GIF) => {
+  const ctx = setup();
+  const pool = { pick };
+  handleReactions(ctx.io, ctx.a, { enabled: true, pool });
+  handleReactions(ctx.io, ctx.b, { enabled: true, pool });
+  return ctx;
+};
+
+test('reaction: a member\'s valid label reaches the peer and acks the sender', () => {
+  const ctx = reactionSetup();
+  const [ack, box] = ackOf();
+  ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'thumbs_up' }, ack);
+  assert.equal(box.r.ok, true);
+  assert.equal(box.r.reaction.label, 'thumbs_up');
+  assert.equal(box.r.reaction.roomId, ctx.roomId);
+  assert.deepEqual(box.r.reaction.gif, GIF);
+  assert.equal(typeof box.r.reaction.id, 'string');
+  assert.deepEqual(ctx.b.received('reaction_received'), [box.r.reaction]);
+  assert.equal(ctx.a.received('reaction_received').length, 0, 'sender must not get its own echo');
+  teardown();
+});
+
+test('reaction: the payload never carries the sender\'s user id', () => {
+  const ctx = reactionSetup();
+  ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'wave' }, () => {});
+  assert.ok(!JSON.stringify(ctx.b.sent).includes(ctx.a.user.id));
+  teardown();
+});
+
+test('reaction: a non-member cannot inject into the room', () => {
+  const ctx = reactionSetup();
+  const intruder = makeSocket(`sock_x${seqId}`, 'user_x');
+  ctx.io.sockets.sockets.set(intruder.id, intruder);
+  handleReactions(ctx.io, intruder, { enabled: true, pool: { pick: () => GIF } });
+  const [ack, box] = ackOf();
+  intruder.fire('reaction', { roomId: ctx.roomId, label: 'wave' }, ack);
+  assert.deepEqual(box.r, { ok: false, error: 'not_member' });
+  assert.equal(ctx.a.received('reaction_received').length, 0);
+  assert.equal(ctx.b.received('reaction_received').length, 0);
+  teardown();
+});
+
+test('reaction: labels outside the closed set are rejected', () => {
+  for (const label of ['__proto__', 'constructor', 'toString', '', 42, null, {}, [], 'THUMBS_UP', 'thumbs_up ', 'kiss']) {
+    const ctx = reactionSetup();
+    const [ack, box] = ackOf();
+    ctx.a.fire('reaction', { roomId: ctx.roomId, label }, ack);
+    assert.deepEqual(box.r, { ok: false, error: 'unknown_label' }, `accepted ${JSON.stringify(label)}`);
+    assert.equal(ctx.b.received('reaction_received').length, 0);
+    teardown();
+  }
+});
+
+test('reaction: junk payloads and a missing ack never throw', () => {
+  for (const payload of [null, undefined, 'x', 42, [], {}]) {
+    const ctx = reactionSetup();
+    const [ack, box] = ackOf();
+    assert.doesNotThrow(() => ctx.a.fire('reaction', payload, ack));
+    assert.deepEqual(box.r, { ok: false, error: 'not_member' }, `payload ${JSON.stringify(payload)}`);
+    teardown();
+  }
+  const ctx = reactionSetup();
+  assert.doesNotThrow(() => ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'wave' }));
+  assert.equal(ctx.b.received('reaction_received').length, 1);
+  teardown();
+});
+
+test('reaction: a client-supplied gif or url never reaches the peer', () => {
+  const ctx = reactionSetup();
+  ctx.a.fire('reaction', {
+    roomId: ctx.roomId,
+    label: 'wave',
+    gif: { url: 'https://evil.example/x.gif' },
+    url: 'https://evil.example/y.gif',
+  }, () => {});
+  assert.equal(ctx.b.received('reaction_received').length, 1);
+  assert.ok(!JSON.stringify(ctx.b.sent).includes('evil'), 'client-controlled URL was relayed');
+  teardown();
+});
+
+test('reaction: the sixth reaction inside 10s is rate limited', () => {
+  const ctx = reactionSetup();
+  const results = [];
+  for (let i = 0; i < 6; i += 1) {
+    const [ack, box] = ackOf();
+    ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'wave' }, ack);
+    results.push(box.r);
+  }
+  assert.equal(results.filter((r) => r.ok).length, 5);
+  assert.deepEqual(results[5], { ok: false, error: 'rate_limited' });
+  assert.equal(ctx.b.received('reaction_received').length, 5);
+  teardown();
+});
+
+test('reaction: an empty GIF pool still delivers, with gif null', () => {
+  const ctx = reactionSetup(() => null);
+  const [ack, box] = ackOf();
+  ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'laugh' }, ack);
+  assert.equal(box.r.ok, true);
+  assert.equal(box.r.reaction.gif, null);
+  assert.equal(ctx.b.last('reaction_received').gif, null);
+  teardown();
+});
+
+test('reaction: a late reaction after the room is torn down is rejected', () => {
+  const ctx = reactionSetup();
+  activeRooms.delete(ctx.roomId); // what end_call / disconnect already do
+  const [ack, box] = ackOf();
+  ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'wave' }, ack);
+  assert.deepEqual(box.r, { ok: false, error: 'not_member' });
+  assert.equal(ctx.b.received('reaction_received').length, 0);
+  teardown();
+});
+
+test('reaction: the kill switch registers zero handlers', () => {
+  const s = makeSocket('sock_off', 'user_off');
+  handleReactions({ sockets: { sockets: new Map() } }, s, { enabled: false, pool: { pick: () => GIF } });
+  assert.equal(s.handlers.size, 0);
+});
+
+// The limiter's default for an unlisted event is UNLIMITED, so a handler added
+// without a limit entry is an open abuse vector. This catches it.
+test('rate limits: every games and reactions event has an eventLimits entry', () => {
+  const s = makeSocket('sock_limits', 'user_limits');
+  const io = { sockets: { sockets: new Map([[s.id, s]]) } };
+  handleGames(io, s);
+  handleReactions(io, s, { enabled: true, pool: { pick: () => null } });
+  const events = [...s.handlers.keys()].filter((k) => !k.startsWith('once:'));
+  assert.ok(events.includes('reaction'));
+  for (const ev of events) assert.ok(eventLimits[ev], `no rate limit for "${ev}"`);
 });
 
 if (process.exitCode) console.error(`socket: FAILED (${passed} passed)`);

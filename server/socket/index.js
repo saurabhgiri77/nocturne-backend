@@ -4,6 +4,7 @@ const Friendship = require('../models/Friendship');
 const { handleMatchmaking } = require('./matchmaking');
 const { handleSignaling } = require('./signaling');
 const { handleGames } = require('./games');
+const { handleReactions } = require('./reactions');
 const { handleMessages } = require('./messages');
 
 // userId → Set<socketId>. A user with multiple tabs counts once.
@@ -221,6 +222,7 @@ const initSocket = (io) => {
     handleMatchmaking(io, socket);
     handleSignaling(io, socket);
     handleGames(io, socket);
+    handleReactions(io, socket);
     handleMessages(io, socket);
 
     socket.on('disconnect', (reason) => {

@@ -369,16 +369,50 @@ test('reaction: labels outside the closed set are rejected', () => {
 });
 
 test('reaction: junk payloads and a missing ack never throw', () => {
+  // No usable roomId reads as a lobby reaction, so these fail on the label.
   for (const payload of [null, undefined, 'x', 42, [], {}]) {
     const ctx = reactionSetup();
     const [ack, box] = ackOf();
     assert.doesNotThrow(() => ctx.a.fire('reaction', payload, ack));
-    assert.deepEqual(box.r, { ok: false, error: 'not_member' }, `payload ${JSON.stringify(payload)}`);
+    assert.deepEqual(box.r, { ok: false, error: 'unknown_label' }, `payload ${JSON.stringify(payload)}`);
     teardown();
   }
   const ctx = reactionSetup();
   assert.doesNotThrow(() => ctx.a.fire('reaction', { roomId: ctx.roomId, label: 'wave' }));
   assert.equal(ctx.b.received('reaction_received').length, 1);
+  teardown();
+});
+
+test('reaction: a lobby reaction (no roomId) answers the sender and nobody else', () => {
+  const ctx = reactionSetup();
+  const [ack, box] = ackOf();
+  ctx.a.fire('reaction', { label: 'wave' }, ack);
+  assert.equal(box.r.ok, true);
+  assert.equal(box.r.reaction.roomId, null);
+  assert.equal(box.r.reaction.label, 'wave');
+  assert.deepEqual(box.r.reaction.gif, GIF);
+  assert.equal(ctx.b.received('reaction_received').length, 0, 'a lobby reaction must not be relayed');
+  assert.equal(ctx.a.received('reaction_received').length, 0);
+  teardown();
+});
+
+test('reaction: a non-string roomId is a lobby reaction, never a room lookup', () => {
+  for (const roomId of [null, undefined, 42, {}, ['x']]) {
+    const ctx = reactionSetup();
+    const [ack, box] = ackOf();
+    ctx.a.fire('reaction', { roomId, label: 'peace' }, ack);
+    assert.equal(box.r.ok, true, `roomId ${JSON.stringify(roomId)}`);
+    assert.equal(box.r.reaction.roomId, null);
+    assert.equal(ctx.b.received('reaction_received').length, 0);
+    teardown();
+  }
+});
+
+test('reaction: an unknown label is rejected in the lobby too', () => {
+  const ctx = reactionSetup();
+  const [ack, box] = ackOf();
+  ctx.a.fire('reaction', { label: 'kiss' }, ack);
+  assert.deepEqual(box.r, { ok: false, error: 'unknown_label' });
   teardown();
 });
 

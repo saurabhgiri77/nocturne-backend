@@ -47,9 +47,16 @@ const handleReactions = (io, socket, { enabled = REACTIONS_ENABLED, pool = defau
   socket.on('reaction', (payload, ack) => {
     const reply = (r) => { if (typeof ack === 'function') ack(r); };
     if (!checkSocketLimit(socket, 'reaction')) return reply({ ok: false, error: 'rate_limited' });
-    const room = memberRoom(payload?.roomId, socket.id);
-    if (!room) return reply({ ok: false, error: 'not_member' });
-    if (!isLabel(payload.label)) return reply({ ok: false, error: 'unknown_label' });
+
+    // Two shapes. With a roomId this is an in-call reaction: membership is
+    // checked and the peer is told. Without one it is a LOBBY reaction — the
+    // user is alone on the home screen, so the GIF is picked and handed back
+    // to them only, and nothing is relayed anywhere. Same closed label set,
+    // same rate limit, still no client-supplied URLs.
+    const roomId = typeof payload?.roomId === 'string' ? payload.roomId : null;
+    const room = roomId ? memberRoom(roomId, socket.id) : null;
+    if (roomId && !room) return reply({ ok: false, error: 'not_member' });
+    if (!isLabel(payload?.label)) return reply({ ok: false, error: 'unknown_label' });
 
     // Built from validated fields only — anything else the client put in the
     // payload (a `gif`, a `url`) is dropped here. No sender id either: for a
@@ -57,11 +64,11 @@ const handleReactions = (io, socket, { enabled = REACTIONS_ENABLED, pool = defau
     // they're talking to.
     const reaction = {
       id: nid(),
-      roomId: payload.roomId,
+      roomId,
       label: payload.label,
       gif: pool.pick(payload.label),
     };
-    getPeer(io, room, socket.id)?.emit('reaction_received', reaction);
+    if (room) getPeer(io, room, socket.id)?.emit('reaction_received', reaction);
     reply({ ok: true, reaction });
   });
 };
